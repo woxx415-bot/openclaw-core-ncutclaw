@@ -18,6 +18,7 @@ minimumReleaseAgeExclude:
   - "@hono/node-server"
   - "@mariozechner/*"
   - "@typescript/native-preview*"
+  - "@tloncorp/*"
   - "@types/node"
   - "@rolldown/*"
   - "@oxlint/*"
