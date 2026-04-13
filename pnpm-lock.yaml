@@ -1262,7 +1262,19 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  packages/clawdbot:
+    dependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   packages/memory-host-sdk: {}
+
+  packages/moltbot:
+    dependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
 
   packages/plugin-package-contract: {}
 
