@@ -172,11 +172,29 @@ async function main() {
       const items = parseRssXml(xml)
       console.log(`[fetch-rss] Parsed ${items.length} items`)
 
-      // Keyword matching
+      // Keyword matching. Two-tier:
+      //   Tier 1: exact phrase substring match (high-precision signal — picks
+      //           up "cloud computing" inside "Cloud Computing for X" etc.)
+      //   Tier 2: token-level any-match. Each keyword phrase is split on
+      //           whitespace; tokens shorter than 3 chars are dropped (skip
+      //           noise like "ai", "of"). An item passes if any single
+      //           token appears as a word boundary match in title/summary.
+      // Why two-tier: arxiv's new OR-of-quoted-phrases query (see
+      // electron/main/research-storage.ts buildLegacySourceUrl arxiv case)
+      // returns relevant papers like "Cloud-native Containers for HPC" or
+      // "Serverless Platforms" that don't contain any user phrase verbatim
+      // but obviously match a single token. Tier 1 alone over-filters.
+      const tokens = new Set(
+        keywords.flatMap((keyword) => keyword.split(/\s+/).filter((t) => t.length >= 3)),
+      )
+      const tokenRegexes = [...tokens].map((t) => new RegExp(`\\b${t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i'))
       const keywordMatched = keywords.length > 0
         ? items.filter((item) => {
             const textToSearch = `${item.title} ${item.summary} ${item.authors}`.toLowerCase()
-            return keywords.some((keyword) => textToSearch.includes(keyword))
+            // Tier 1: phrase-level substring
+            if (keywords.some((keyword) => textToSearch.includes(keyword))) return true
+            // Tier 2: token-level word-boundary
+            return tokenRegexes.some((re) => re.test(textToSearch))
           })
         : items
 
