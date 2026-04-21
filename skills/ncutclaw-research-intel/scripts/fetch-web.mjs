@@ -370,8 +370,65 @@ async function parseBilibili(task, source) {
   })
 }
 
+// Convert yt-dlp's upload_date (YYYYMMDD) to ISO 8601 date. yt-dlp omits
+// time-of-day for search-page entries, so noon UTC is a stable, sortable
+// proxy that won't accidentally fall on the wrong calendar day in any
+// timezone the briefing renders in.
+function ytDlpUploadDateToIso(upload_date) {
+  if (typeof upload_date !== 'string' || !/^\d{8}$/.test(upload_date)) return ''
+  const y = upload_date.slice(0, 4)
+  const m = upload_date.slice(4, 6)
+  const d = upload_date.slice(6, 8)
+  return `${y}-${m}-${d}T12:00:00.000Z`
+}
+
+// Run `yt-dlp ytsearchN:<query> --flat-playlist --dump-json` and yield
+// one parsed JSON object per result line. Cookies file is honored when
+// configured — YouTube serves much richer / less throttled metadata to
+// authenticated requests, and unauthenticated runs are increasingly likely
+// to return 0 results. Returns [] on any failure so the caller can fall
+// back to the HTML-scrape path.
+async function ytDlpSearch(query, limit = 20) {
+  const cookiesPath = loadCookiesPath()
+  const args = [
+    `ytsearch${limit}:${query}`,
+    '--flat-playlist',
+    '--dump-json',
+    '--no-warnings',
+    '--no-playlist',
+  ]
+  if (cookiesPath) args.push('--cookies', cookiesPath)
+
+  try {
+    const { stdout } = await execFileAsync(resolveYtDlpCommand(), args, {
+      // 90s covers slow networks; --flat-playlist is metadata-only so it
+      // shouldn't take this long under normal conditions.
+      timeout: 90_000,
+      maxBuffer: 16 * 1024 * 1024,
+      windowsHide: true,
+    })
+    const lines = String(stdout || '').split(/\r?\n/).filter((line) => line.trim().length > 0)
+    const items = []
+    for (const line of lines) {
+      try {
+        items.push(JSON.parse(line))
+      } catch {
+        // Skip malformed lines (yt-dlp occasionally interleaves status output)
+      }
+    }
+    return items
+  } catch (err) {
+    console.warn(`[fetch-web] yt-dlp ytsearch failed${cookiesPath ? '' : ' (no cookies — YouTube often blocks anonymous searches; configure cookies in settings)'}: ${err?.message || err}`)
+    return []
+  }
+}
+
 async function parseYoutube(task, source) {
   const url = String(source.url || '')
+
+  // Real YouTube Data API v3 — caller pasted a v3 search endpoint with their
+  // own key. Untouched: when the user has gone to that trouble, they want
+  // exactly that, not a yt-dlp substitute.
   if (url.includes('googleapis.com/youtube/v3/search') || url.includes('youtube.googleapis.com/youtube/v3/search')) {
     const data = await fetchJson(url)
     const items = Array.isArray(data?.items) ? data.items : []
@@ -390,6 +447,60 @@ async function parseYoutube(task, source) {
       }))
   }
 
+  // Search-page URL produced by buildSourcesFromTypes / getYoutubeSearchUrl
+  // (research-storage.ts) — switch from the old HTML scrape (which YouTube
+  // increasingly serves bot-detection markup for, returning 0 results) to
+  // `yt-dlp ytsearchN:`. Same call shape as the Douyin metadata pipeline,
+  // honors cookies, returns flat-playlist metadata so we don't pay one
+  // request per video.
+  const isSearchPage = /youtube\.com\/results\?/i.test(url)
+  if (isSearchPage) {
+    let query = ''
+    try {
+      query = new URL(url).searchParams.get('search_query') || ''
+    } catch {
+      // fall through — query stays empty, ytsearch returns nothing, we
+      // drop into HTML scrape below
+    }
+    if (query) {
+      const items = await ytDlpSearch(query, 20)
+      const dedup = new Set()
+      const resources = []
+      for (const item of items) {
+        const videoId = item?.id || item?.url
+        if (!videoId || typeof videoId !== 'string' || dedup.has(videoId)) continue
+        dedup.add(videoId)
+        const watchUrl = videoId.startsWith('http')
+          ? videoId
+          : `https://www.youtube.com/watch?v=${videoId}`
+        resources.push(buildResource(task, 'youtube', {
+          resourceType: 'video',
+          title: item?.title || 'YouTube Video',
+          authorsOrChannel: item?.uploader || item?.channel || item?.uploader_id || '',
+          publishedAt: ytDlpUploadDateToIso(item?.upload_date),
+          url: watchUrl,
+          abstractOrDescription: item?.description || '',
+          whatItDoes: '',
+          dedupKey: `youtube:${videoId}`,
+          meta: {
+            videoId,
+            // filterVideoQuality reads play (view count) and duration (seconds).
+            play: Number(item?.view_count) || 0,
+            duration: Number(item?.duration) || 0,
+          },
+        }))
+      }
+      // Only fall through to HTML scrape if yt-dlp produced literally nothing
+      // — likely means binary missing or YouTube blocking. If yt-dlp gave us
+      // even one result, trust it and return.
+      if (resources.length > 0) return resources
+    }
+  }
+
+  // Last-resort HTML scrape. Kept because (a) yt-dlp may not be installed
+  // on first run before `resolveYtDlpPath()` in research-download.ts has
+  // had a chance to fetch it, and (b) some custom URLs aren't search pages
+  // and we still want a best-effort path for them.
   const html = await fetchText(url, {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NCUTclawBot/2.0',
     'Accept-Language': 'en-US,en;q=0.8',
