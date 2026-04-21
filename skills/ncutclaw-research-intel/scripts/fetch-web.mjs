@@ -1,4 +1,6 @@
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { existsSync, writeFileSync, mkdirSync } from 'node:fs'
+import { execFile as execFileCb } from 'node:child_process'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import {
   downloadPaperPdf,
@@ -7,6 +9,57 @@ import {
   hashKey,
   readJsonFile,
 } from './resource-utils.mjs'
+
+function execFileAsync(command, args, options = {}) {
+  return new Promise((resolve, reject) => {
+    execFileCb(command, args, { ...options, encoding: 'utf-8' }, (error, stdout, stderr) => {
+      if (error) reject(Object.assign(error, { stdout, stderr }))
+      else resolve({ stdout: String(stdout || ''), stderr: String(stderr || '') })
+    })
+  })
+}
+
+function getOpenClawStateDir() {
+  const fromEnv = String(process.env.OPENCLAW_STATE_DIR || '').trim()
+  return fromEnv || join(homedir(), '.ncutclaw')
+}
+
+function resolveYtDlpCommand() {
+  const stateDir = getOpenClawStateDir()
+  const localName = process.platform === 'win32' ? 'yt-dlp.exe' : 'yt-dlp'
+  const localPath = join(stateDir, 'bin', localName)
+  return existsSync(localPath) ? localPath : 'yt-dlp'
+}
+
+function loadCookiesPath() {
+  try {
+    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const filePath = typeof config?.downloads?.cookiesFile === 'string'
+      ? config.downloads.cookiesFile.trim()
+      : ''
+    return filePath || ''
+  } catch {
+    return ''
+  }
+}
+
+// Optional. Users can paste a free API key from
+// https://www.semanticscholar.org/product/api#api-key-form into
+// ~/.ncutclaw/openclaw.json as { "research": { "semanticScholarApiKey": "..." } }
+// to lift the anonymous rate limit (100 req / 5min) to the keyed tier
+// (1000 req / sec). Without a key we still try, just with more aggressive
+// retries and a higher chance of returning 0 items under load.
+function loadSemanticScholarApiKey() {
+  try {
+    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const key = typeof config?.research?.semanticScholarApiKey === 'string'
+      ? config.research.semanticScholarApiKey.trim()
+      : ''
+    return key || ''
+  } catch {
+    return ''
+  }
+}
 
 const SEMANTIC_SCHOLAR_FIELDS = [
   'title',
@@ -63,6 +116,7 @@ function inferProvider(source) {
   if (label.includes('youtube') || url.includes('youtu.be') || url.includes('youtube.com')) return 'youtube'
   if (label.includes('bili') || url.includes('bilibili.com') || url.includes('api.bilibili.com')) return 'bilibili'
   if (label.includes('xiaohongshu') || url.includes('xiaohongshu.com')) return 'xiaohongshu'
+  if (label.includes('douyin') || url.includes('douyin.com') || url.includes('v.douyin.com')) return 'douyin'
   return 'web'
 }
 
@@ -196,11 +250,25 @@ function parseDurationToSeconds(raw) {
 }
 
 async function parseSemanticScholar(task, source) {
+  const url = prepareSemanticScholarUrl(source.url)
+  const apiKey = loadSemanticScholarApiKey()
+  // With an API key we're on the keyed tier and normal retry budget is
+  // plenty. Without one we're sharing the anonymous 100-req / 5-min pool
+  // with every other SS caller in the world — bump retries and widen
+  // the backoff cap so a transient 429 at start-of-task doesn't turn
+  // into a zero-paper run. The overall cap stays under the fetch-web
+  // 90s script timeout so one sticky source can't blow the budget.
+  const headers = apiKey ? { 'x-api-key': apiKey } : {}
+  const retryConfig = apiKey
+    ? { maxRetries: 3, maxBackoffMs: 8000 }
+    : { maxRetries: 5, maxBackoffMs: 20000 }
+
   let data
   try {
-    data = await fetchJson(prepareSemanticScholarUrl(source.url))
+    const resp = await fetchWithRetry(url, { headers }, retryConfig)
+    data = await resp.json()
   } catch (err) {
-    console.warn(`[fetch-web] Semantic Scholar unavailable: ${err?.message || err} — skipping`)
+    console.warn(`[fetch-web] Semantic Scholar unavailable${apiKey ? ' (with API key)' : ' (anonymous, likely rate-limited — add an API key in ~/.ncutclaw/openclaw.json under research.semanticScholarApiKey)'}: ${err?.message || err} — skipping`)
     return []
   }
   const papers = Array.isArray(data?.data) ? data.data : []
@@ -367,6 +435,57 @@ async function parseXiaohongshu(task, source) {
   })]
 }
 
+async function parseDouyin(task, source) {
+  const cookiesPath = loadCookiesPath()
+  try {
+    const args = ['--dump-single-json', '--no-download']
+    if (cookiesPath) args.push('--cookies', cookiesPath)
+    args.push(source.url)
+
+    const { stdout } = await execFileAsync(resolveYtDlpCommand(), args, {
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    })
+
+    const meta = JSON.parse(stdout || '{}')
+    const timestamp = Number(meta?.timestamp)
+    return [buildResource(task, 'douyin', {
+      resourceType: 'video',
+      title: meta?.title || '抖音内容',
+      authorsOrChannel: meta?.uploader || meta?.channel || meta?.creator || '',
+      publishedAt: Number.isFinite(timestamp) && timestamp > 0
+        ? new Date(timestamp * 1000).toISOString()
+        : '',
+      url: meta?.webpage_url || source.url,
+      abstractOrDescription: meta?.description || '',
+      whatItDoes: '',
+      dedupKey: meta?.id ? `douyin:${meta.id}` : `douyin:${hashKey(source.url)}`,
+      meta: {
+        duration: meta?.duration || '',
+        play: meta?.view_count || 0,
+      },
+    })]
+  } catch (error) {
+    console.warn(`[fetch-web] Douyin yt-dlp metadata failed: ${error?.message || error}`)
+  }
+
+  const html = await fetchText(source.url, {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NCUTclawBot/2.0',
+  })
+  const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i)
+  const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([\s\S]*?)["']/i)
+
+  return [buildResource(task, 'douyin', {
+    resourceType: 'video',
+    title: titleMatch?.[1]?.trim() || '抖音内容',
+    url: source.url,
+    abstractOrDescription: descMatch?.[1]?.trim() || '',
+    whatItDoes: '',
+    dedupKey: `douyin:${hashKey(source.url)}`,
+  })]
+}
+
 function extractText(html, url) {
   let bodyHTML = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
@@ -457,6 +576,7 @@ async function fetchBySource(task, source) {
   if (provider === 'youtube') return await parseYoutube(task, source)
   if (provider === 'bilibili') return await parseBilibili(task, source)
   if (provider === 'xiaohongshu') return await parseXiaohongshu(task, source)
+  if (provider === 'douyin') return await parseDouyin(task, source)
   return await parseGenericWeb(task, source)
 }
 
@@ -482,15 +602,22 @@ async function main() {
   const keywords = (task.keywords || []).map((k) => String(k).toLowerCase())
   const allResources = []
   const legacyItems = []
+  // Per-source status tally so research.ts can surface honest step state
+  // instead of the old silent "fetch-web = ok even if every source was
+  // empty or errored" behavior. Emitted as a SUMMARY sentinel line below.
+  const sourceResults = []
 
   for (const source of webSources) {
     console.log(`[fetch-web] Fetching ${source.label}: ${source.url}`)
     try {
       const fetched = await fetchBySource(task, source)
-      let matched = matchKeywords(fetched, keywords)
+      const provider = inferProvider(source)
+      // Direct Douyin URL imports are explicit user picks rather than
+      // keyword search results, so keep the resource even if its title/
+      // description don't literally contain every task keyword.
+      let matched = provider === 'douyin' ? fetched : matchKeywords(fetched, keywords)
 
       // Apply quality filters by resource type
-      const provider = inferProvider(source)
       if (provider === 'semantic-scholar' || provider === 'scholar') {
         matched = filterRecentPapers(matched)
       } else if (provider === 'bilibili' || provider === 'youtube') {
@@ -499,11 +626,30 @@ async function main() {
 
       allResources.push(...matched)
       legacyItems.push(...matched.map(toLegacyItem))
+      sourceResults.push({
+        label: source.label || provider || 'web',
+        status: matched.length > 0 ? 'ok' : 'empty',
+        count: matched.length,
+      })
       console.log(`[fetch-web] ${source.label} -> ${matched.length} resources (after quality filter)`)
     } catch (e) {
-      console.error(`[fetch-web] Failed for ${source.label}:`, e?.message || String(e))
+      const message = e?.message || String(e)
+      sourceResults.push({
+        label: source.label || inferProvider(source) || 'web',
+        status: 'error',
+        count: 0,
+        message,
+      })
+      console.error(`[fetch-web] Failed for ${source.label}:`, message)
     }
   }
+
+  // Machine-readable summary for research.ts. Must be on a single line and
+  // prefixed exactly with "[fetch-web] SUMMARY " so the caller regex can
+  // pick it out of the combined stdout stream. Keep message short to stay
+  // inside the runner's default maxBuffer.
+  const summaryPayload = { results: sourceResults }
+  console.log(`[fetch-web] SUMMARY ${JSON.stringify(summaryPayload)}`)
 
   if (allResources.length === 0) {
     console.log('[fetch-web] No resources collected')

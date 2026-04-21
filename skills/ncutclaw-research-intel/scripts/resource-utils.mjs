@@ -41,16 +41,23 @@ function parseRetryAfterSeconds(resp) {
   return value
 }
 
-function computeRetryDelay(attempt, resp) {
+// maxBackoffMs caps both the synthesized exponential backoff AND the
+// Retry-After value. We still honor Retry-After as the minimum signal
+// (servers know their own rate-limit window) but refuse to wait longer
+// than the caller asked for — e.g. Semantic Scholar sometimes asks for
+// 120s on anonymous calls, which would blow the outer fetch-web 90s
+// script timeout. Better to fail fast than hang the whole pipeline.
+function computeRetryDelay(attempt, resp, maxBackoffMs) {
   const retryAfterSeconds = resp ? parseRetryAfterSeconds(resp) : 0
-  if (retryAfterSeconds > 0) return retryAfterSeconds * 1000
+  if (retryAfterSeconds > 0) return Math.min(retryAfterSeconds * 1000, maxBackoffMs)
   const baseDelay = 800 * (2 ** attempt)
   const jitter = Math.floor(Math.random() * 250)
-  return Math.min(baseDelay + jitter, 8000)
+  return Math.min(baseDelay + jitter, maxBackoffMs)
 }
 
 export async function fetchWithRetry(url, options = {}, config = {}) {
   const maxRetries = Number.isFinite(Number(config.maxRetries)) ? Number(config.maxRetries) : 3
+  const maxBackoffMs = Number.isFinite(Number(config.maxBackoffMs)) ? Number(config.maxBackoffMs) : 8000
   let lastError = null
 
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
@@ -68,7 +75,7 @@ export async function fetchWithRetry(url, options = {}, config = {}) {
       if (attempt === maxRetries) break
     }
 
-    await sleep(computeRetryDelay(attempt, resp))
+    await sleep(computeRetryDelay(attempt, resp, maxBackoffMs))
   }
 
   throw lastError || new Error('request failed')

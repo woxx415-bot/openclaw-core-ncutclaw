@@ -155,6 +155,9 @@ async function main() {
   mkdirSync(outputDir, { recursive: true })
 
   const keywords = (task.keywords || []).map((keyword) => String(keyword).toLowerCase())
+  // Per-source status tally, mirroring fetch-web.mjs's SUMMARY protocol so
+  // research.ts can promote partial/total failures into honest step state.
+  const sourceResults = []
 
   for (const src of rssSources) {
     console.log(`[fetch-rss] Fetching ${src.label}: ${src.url}`)
@@ -190,7 +193,10 @@ async function main() {
 
       console.log(`[fetch-rss] Matched ${keywordMatched.length} items, ${recentItems.length} recent (>=${minYear}), keeping ${filtered.length}`)
 
-      if (filtered.length === 0) continue
+      if (filtered.length === 0) {
+        sourceResults.push({ label: src.label || 'rss', status: 'empty', count: 0 })
+        continue
+      }
 
       const provider = inferRssProvider(src)
       const resources = await Promise.all(filtered.map((item) => buildPaperResource(task, provider, item)))
@@ -202,10 +208,18 @@ async function main() {
       const legacyPath = join(outputDir, `rss-${src.label}-${Date.now()}.json`)
       writeFileSync(legacyPath, JSON.stringify(filtered.map(buildLegacyItem), null, 2), 'utf-8')
       console.log(`[fetch-rss] Saved legacy items to ${legacyPath}`)
+
+      sourceResults.push({ label: src.label || 'rss', status: 'ok', count: filtered.length })
     } catch (error) {
-      console.error(`[fetch-rss] Failed to fetch ${src.url}:`, error?.message || String(error))
+      const message = error?.message || String(error)
+      sourceResults.push({ label: src.label || 'rss', status: 'error', count: 0, message })
+      console.error(`[fetch-rss] Failed to fetch ${src.url}:`, message)
     }
   }
+
+  // Machine-readable summary — see research.ts::parseFetchSummary. Must be
+  // a single line, exact prefix so the regex can lift it out of stdout.
+  console.log(`[fetch-rss] SUMMARY ${JSON.stringify({ results: sourceResults })}`)
 }
 
 main().catch((error) => {
