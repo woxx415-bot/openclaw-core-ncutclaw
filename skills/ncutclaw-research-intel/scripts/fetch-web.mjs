@@ -31,6 +31,13 @@ function resolveYtDlpCommand() {
   return existsSync(localPath) ? localPath : 'yt-dlp'
 }
 
+// Mirrors VALID_COOKIES_BROWSERS in electron/main/research-download.ts.
+// Kept in sync by hand because this script runs in a separate Node child
+// process and cannot import from the Electron main bundle.
+const VALID_COOKIES_BROWSERS = new Set([
+  'chrome', 'edge', 'firefox', 'brave', 'opera', 'vivaldi', 'safari', 'chromium', 'whale',
+])
+
 function loadCookiesPath() {
   try {
     const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
@@ -41,6 +48,28 @@ function loadCookiesPath() {
   } catch {
     return ''
   }
+}
+
+function loadCookiesBrowser() {
+  try {
+    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const browser = typeof config?.downloads?.cookiesBrowser === 'string'
+      ? config.downloads.cookiesBrowser.trim().toLowerCase()
+      : ''
+    return browser && VALID_COOKIES_BROWSERS.has(browser) ? browser : ''
+  } catch {
+    return ''
+  }
+}
+
+// Build yt-dlp cookies args. Browser > file > none. Mirrors the same
+// helper in research-download.ts. Returns string[] for spread into argv.
+function buildYtDlpCookiesArgs() {
+  const browser = loadCookiesBrowser()
+  if (browser) return ['--cookies-from-browser', browser]
+  const file = loadCookiesPath()
+  if (file && existsSync(file)) return ['--cookies', file]
+  return []
 }
 
 // Optional. Users can paste a free API key from
@@ -389,15 +418,15 @@ function ytDlpUploadDateToIso(upload_date) {
 // to return 0 results. Returns [] on any failure so the caller can fall
 // back to the HTML-scrape path.
 async function ytDlpSearch(query, limit = 20) {
-  const cookiesPath = loadCookiesPath()
+  const cookiesArgs = buildYtDlpCookiesArgs()
   const args = [
     `ytsearch${limit}:${query}`,
     '--flat-playlist',
     '--dump-json',
     '--no-warnings',
     '--no-playlist',
+    ...cookiesArgs,
   ]
-  if (cookiesPath) args.push('--cookies', cookiesPath)
 
   try {
     const { stdout } = await execFileAsync(resolveYtDlpCommand(), args, {
@@ -418,7 +447,8 @@ async function ytDlpSearch(query, limit = 20) {
     }
     return items
   } catch (err) {
-    console.warn(`[fetch-web] yt-dlp ytsearch failed${cookiesPath ? '' : ' (no cookies — YouTube often blocks anonymous searches; configure cookies in settings)'}: ${err?.message || err}`)
+    const noCookies = cookiesArgs.length === 0
+    console.warn(`[fetch-web] yt-dlp ytsearch failed${noCookies ? ' (no cookies — YouTube often blocks anonymous searches; configure cookies in settings)' : ''}: ${err?.message || err}`)
     return []
   }
 }
@@ -547,10 +577,8 @@ async function parseXiaohongshu(task, source) {
 }
 
 async function parseDouyin(task, source) {
-  const cookiesPath = loadCookiesPath()
   try {
-    const args = ['--dump-single-json', '--no-download']
-    if (cookiesPath) args.push('--cookies', cookiesPath)
+    const args = ['--dump-single-json', '--no-download', ...buildYtDlpCookiesArgs()]
     args.push(source.url)
 
     const { stdout } = await execFileAsync(resolveYtDlpCommand(), args, {
