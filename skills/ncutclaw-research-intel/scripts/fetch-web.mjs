@@ -322,7 +322,7 @@ async function parseSemanticScholar(task, source) {
     const resp = await fetchWithRetry(url, { headers }, retryConfig)
     data = await resp.json()
   } catch (err) {
-    console.warn(`[fetch-web] Semantic Scholar unavailable${apiKey ? ' (with API key)' : ' (anonymous, likely rate-limited — add an API key in ~/.ncutclaw/openclaw.json under research.semanticScholarApiKey)'}: ${err?.message || err} — skipping`)
+    console.warn(`[fetch-web] Semantic Scholar unavailable${apiKey ? ' (with API key)' : ' (anonymous, likely rate-limited — add an API key in ~/.ncutclaw/ncutclaw.json under research.semanticScholarApiKey; do NOT use openclaw.json — Gateway will reject unknown root keys)'}: ${err?.message || err} — skipping`)
     return []
   }
   const papers = Array.isArray(data?.data) ? data.data : []
