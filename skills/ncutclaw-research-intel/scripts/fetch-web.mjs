@@ -38,9 +38,34 @@ const VALID_COOKIES_BROWSERS = new Set([
   'chrome', 'edge', 'firefox', 'brave', 'opera', 'vivaldi', 'safari', 'chromium', 'whale',
 ])
 
+// NCUTclaw-only state lives in ncutclaw.json (sibling of openclaw.json).
+// openclaw.json is the Gateway's strict-schema config and rejects any
+// unknown root key (e.g. "downloads", "research") with exit code 1, so
+// app-level state must NOT live there. We still read openclaw.json as a
+// fall-back for users running this script from a checkout where the
+// migration in electron/main/config.ts hasn't run yet — once the app
+// starts up once, ncutclaw.json wins.
+function loadNcutclawAppConfig() {
+  const stateDir = getOpenClawStateDir()
+  // Try the new app-config file first.
+  try {
+    return readJsonFile(join(stateDir, 'ncutclaw.json'))
+  } catch {
+    // Fall through to legacy lookup.
+  }
+  // Legacy: read from openclaw.json. Old NCUTclaw versions wrote
+  // downloads/research keys here; the parent app migrates them away on
+  // next startup, but this script can run before that migration.
+  try {
+    return readJsonFile(join(stateDir, 'openclaw.json'))
+  } catch {
+    return null
+  }
+}
+
 function loadCookiesPath() {
   try {
-    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const config = loadNcutclawAppConfig()
     const filePath = typeof config?.downloads?.cookiesFile === 'string'
       ? config.downloads.cookiesFile.trim()
       : ''
@@ -52,7 +77,7 @@ function loadCookiesPath() {
 
 function loadCookiesBrowser() {
   try {
-    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const config = loadNcutclawAppConfig()
     const browser = typeof config?.downloads?.cookiesBrowser === 'string'
       ? config.downloads.cookiesBrowser.trim().toLowerCase()
       : ''
@@ -74,13 +99,13 @@ function buildYtDlpCookiesArgs() {
 
 // Optional. Users can paste a free API key from
 // https://www.semanticscholar.org/product/api#api-key-form into
-// ~/.ncutclaw/openclaw.json as { "research": { "semanticScholarApiKey": "..." } }
+// ~/.ncutclaw/ncutclaw.json as { "research": { "semanticScholarApiKey": "..." } }
 // to lift the anonymous rate limit (100 req / 5min) to the keyed tier
 // (1000 req / sec). Without a key we still try, just with more aggressive
 // retries and a higher chance of returning 0 items under load.
 function loadSemanticScholarApiKey() {
   try {
-    const config = readJsonFile(join(getOpenClawStateDir(), 'openclaw.json'))
+    const config = loadNcutclawAppConfig()
     const key = typeof config?.research?.semanticScholarApiKey === 'string'
       ? config.research.semanticScholarApiKey.trim()
       : ''

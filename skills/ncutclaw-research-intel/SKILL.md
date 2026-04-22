@@ -131,7 +131,7 @@ Semantic Scholar 对匿名请求限流很严（100 req / 5min，所有匿名用�
 
 申请地址：https://www.semanticscholar.org/product/api#api-key-form
 
-申请到后写入 `~/.ncutclaw/openclaw.json`：
+申请到后写入 `~/.ncutclaw/ncutclaw.json`（注意是 `ncutclaw.json` 而非 `openclaw.json` —— 后者是 Gateway 自己的配置文件，schema 严格不允许此键，写错会让 Gateway 启动失败）：
 
 ```json
 {
@@ -142,3 +142,5 @@ Semantic Scholar 对匿名请求限流很严（100 req / 5min，所有匿名用�
 ```
 
 生效立即，重启 app 不需要。未配置时系统仍会尝试匿名请求并加大重试次数，但不保证每次都有结果。
+
+> 历史兼容：如果 key 已写在 `openclaw.json` 里，下次启动 NCUTclaw 会把它自动迁到 `ncutclaw.json` 并从 openclaw.json 中删除，恢复 Gateway 启动。
