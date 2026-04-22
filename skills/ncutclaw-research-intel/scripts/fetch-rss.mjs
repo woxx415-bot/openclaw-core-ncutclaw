@@ -198,12 +198,15 @@ async function main() {
           })
         : items
 
-      // Date filtering: prefer recent 2 years
+      // Date filtering: prefer recent 2 years.
+      // Note: parseRssXml emits `date` (line ~54), not `published` — the
+      // previous `!item.published` always returned true so this filter
+      // was a no-op and old papers slipped through.
       const currentYear = new Date().getFullYear()
       const minYear = currentYear - 2
       const recentItems = keywordMatched.filter((item) => {
-        if (!item.published) return true
-        const year = new Date(item.published).getFullYear()
+        if (!item.date) return true
+        const year = new Date(item.date).getFullYear()
         return Number.isNaN(year) || year >= minYear
       })
       // Fall back to all if too few recent results

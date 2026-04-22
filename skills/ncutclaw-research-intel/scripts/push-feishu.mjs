@@ -81,36 +81,68 @@ function createFeishuElementsFromMarkdown(markdown) {
   return elements
 }
 
+// Single-line summary the parent process (electron/main/research.ts) parses
+// to record the real step status. Without this, every exit-0 looked like
+// "ok" — including the silent-skip path where the type literal didn't match.
+function emitSummary(status, message) {
+  console.log(`[push-feishu] SUMMARY ${JSON.stringify({ status, message })}`)
+}
+
+// Recognized target types. UI / storage produce {'group','doc','none'};
+// 'feishu_group' kept as a legacy alias so older task.json files still
+// route correctly. 'doc' currently has no implementation — we skip
+// honestly rather than silently no-op.
+function normalizeTargetType(rawType) {
+  if (rawType === 'feishu_group' || rawType === 'group') return 'group'
+  if (rawType === 'doc') return 'doc'
+  return rawType || 'none'
+}
+
 async function main() {
   const taskIdx = process.argv.indexOf('--task')
   if (taskIdx === -1) {
     console.error('Usage: node push-feishu.mjs --task <path/to/task.json>')
+    emitSummary('error', 'missing --task argument')
     process.exit(1)
   }
-  
+
   const taskPath = process.argv[taskIdx + 1]
   const task = JSON.parse(readFileSync(taskPath, 'utf-8'))
-  
-  if (!task.feishuTarget || task.feishuTarget.type === 'none') {
+  const targetType = normalizeTargetType(task.feishuTarget?.type)
+
+  if (!task.feishuTarget || targetType === 'none') {
     console.log('[push-feishu] No Feishu push target configured')
+    emitSummary('skipped', '未配置飞书推送目标')
     return
   }
-  
+
+  if (targetType === 'doc') {
+    // Feishu Doc append needs the docs/blocks API which is significantly
+    // more involved than im/v1/messages — defer until there's user demand.
+    // Honest 'skipped' status surfaces in the task card so the user knows
+    // to switch to group push, instead of seeing a silent ok.
+    console.log('[push-feishu] Doc target type 暂未实现 — 请在设置改用群推送 (group)')
+    emitSummary('skipped', '飞书 Doc 推送暂未实现，请改用群推送')
+    return
+  }
+
   // Read openclaw config for Feishu App ID & Secret
   const configPath = join(homedir(), '.ncutclaw/openclaw.json')
   if (!existsSync(configPath)) {
     console.error('[push-feishu] openclaw.json not found')
-    return
+    emitSummary('error', '配置文件不存在')
+    process.exit(1)
   }
-  
+
   const userConfig = JSON.parse(readFileSync(configPath, 'utf-8'))
   const feishuCfg = userConfig.channels?.feishu
-  
+
   if (!feishuCfg?.enabled || !feishuCfg?.appId || !feishuCfg?.appSecret) {
     console.error('[push-feishu] Feishu channel is not fully configured or not enabled in Settings')
-    return
+    emitSummary('error', '飞书渠道未启用或缺少 appId/appSecret')
+    process.exit(1)
   }
-  
+
   // Find today's briefing
   const today = new Date().toISOString().slice(0, 10)
   let storageDir = task.storageDir
@@ -119,41 +151,52 @@ async function main() {
   } else if (!storageDir) {
     storageDir = join(homedir(), '.ncutclaw/workspace/research-data', task.id)
   }
-  
+
   const briefingPath = join(storageDir, today, 'briefing.md')
   if (!existsSync(briefingPath)) {
     console.log(`[push-feishu] Today's briefing not found at ${briefingPath}`)
+    emitSummary('skipped', '今日简报不存在')
     return
   }
-  
+
   const markdown = readFileSync(briefingPath, 'utf-8')
-  
+
+  // targetType === 'group' here. chatId required for group route.
+  if (!task.feishuTarget.chatId) {
+    console.error('[push-feishu] group target missing chatId')
+    emitSummary('error', '群推送目标缺少 chatId')
+    process.exit(1)
+  }
+
   try {
     console.log('[push-feishu] Getting access token...')
     const token = await getTenantAccessToken(feishuCfg.appId, feishuCfg.appSecret)
-    
-    if (task.feishuTarget.type === 'feishu_group' && task.feishuTarget.chatId) {
-      console.log(`[push-feishu] Pushing to group ${task.feishuTarget.chatId}...`)
-      // Convert markdown to card elements
-      // Remove the top level # TaskName that we added in generate-briefing, as it goes to card header
-      let cleanedMd = markdown.replace(/^# .*每日简报\n/, '').replace(/^> 生成时间:.*\n/, '').replace(/^> 来源总数:.*\n/, '').replace(/^---\n/, '').trim()
-      
-      const elements = createFeishuElementsFromMarkdown(cleanedMd)
-      await sendInteractiveMessage(
-        token, 
-        task.feishuTarget.chatId, 
-        'interactive', 
-        'chat_id', 
-        elements, 
-        `📚 ${task.name} 每日简报`
-      )
-      console.log('[push-feishu] Successfully pushed to Feishu group')
-    } else {
-      console.log('[push-feishu] Target type ' + task.feishuTarget.type + ' not fully supported in this version or missing auth credentials.')
-    }
+
+    console.log(`[push-feishu] Pushing to group ${task.feishuTarget.chatId}...`)
+    // Convert markdown to card elements
+    // Remove the top level # TaskName that we added in generate-briefing, as it goes to card header
+    let cleanedMd = markdown.replace(/^# .*每日简报\n/, '').replace(/^> 生成时间:.*\n/, '').replace(/^> 来源总数:.*\n/, '').replace(/^---\n/, '').trim()
+
+    const elements = createFeishuElementsFromMarkdown(cleanedMd)
+    await sendInteractiveMessage(
+      token,
+      task.feishuTarget.chatId,
+      'interactive',
+      'chat_id',
+      elements,
+      `📚 ${task.name} 每日简报`
+    )
+    console.log('[push-feishu] Successfully pushed to Feishu group')
+    emitSummary('ok', `已推送至群 ${String(task.feishuTarget.chatId).slice(0, 16)}…`)
   } catch (err) {
     console.error('[push-feishu] Feishu push failed:', err.message)
+    emitSummary('error', String(err.message || err).slice(0, 200))
+    process.exit(1)
   }
 }
 
-main().catch(console.error)
+main().catch((err) => {
+  console.error('[push-feishu] fatal:', err)
+  emitSummary('error', String(err?.message || err).slice(0, 200))
+  process.exit(1)
+})
