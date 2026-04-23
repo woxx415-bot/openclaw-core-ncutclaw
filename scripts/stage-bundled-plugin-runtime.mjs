@@ -15,7 +15,7 @@ function relativeSymlinkTarget(sourcePath, targetPath) {
 function shouldFallbackToCopy(error) {
   return (
     process.platform === "win32" &&
-    (error?.code === "EPERM" || error?.code === "EINVAL" || error?.code === "UNKNOWN")
+    (error?.code === "EPERM" || error?.code === "EINVAL" || error?.code === "UNKNOWN" || error?.code === "EBUSY")
   );
 }
 
