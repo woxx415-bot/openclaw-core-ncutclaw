@@ -584,10 +584,46 @@ async function parseYoutube(task, source) {
 }
 
 async function parseXiaohongshu(task, source) {
+  // yt-dlp has a dedicated xiaohongshu extractor that reads window.__INITIAL_STATE__
+  // and returns structured metadata (title, description, uploader, tags, media).
+  // Falls back to raw HTML title/description when yt-dlp fails — typically that
+  // means cookies are stale or the note requires login. Same shape as parseDouyin
+  // so both platforms are at parity: URL-import only, yt-dlp first, HTML fallback.
+  try {
+    const args = ['--dump-single-json', '--no-download', ...buildYtDlpCookiesArgs()]
+    args.push(source.url)
+
+    const { stdout } = await execFileAsync(resolveYtDlpCommand(), args, {
+      timeout: 120_000,
+      maxBuffer: 8 * 1024 * 1024,
+      windowsHide: true,
+    })
+
+    const meta = JSON.parse(stdout || '{}')
+    const timestamp = Number(meta?.timestamp)
+    return [buildResource(task, 'xiaohongshu', {
+      resourceType: 'video',
+      title: meta?.title || '小红书内容',
+      authorsOrChannel: meta?.uploader || meta?.channel || meta?.creator || '',
+      publishedAt: Number.isFinite(timestamp) && timestamp > 0
+        ? new Date(timestamp * 1000).toISOString()
+        : '',
+      url: meta?.webpage_url || source.url,
+      abstractOrDescription: meta?.description || '',
+      whatItDoes: '',
+      dedupKey: meta?.id ? `xiaohongshu:${meta.id}` : `xiaohongshu:${hashKey(source.url)}`,
+      meta: {
+        duration: meta?.duration || '',
+        play: meta?.view_count || 0,
+      },
+    })]
+  } catch (error) {
+    console.warn(`[fetch-web] Xiaohongshu yt-dlp metadata failed: ${error?.message || error}`)
+  }
+
   const html = await fetchText(source.url, {
     'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) NCUTclawBot/2.0',
   })
-
   const titleMatch = html.match(/<title>([\s\S]*?)<\/title>/i)
   const descMatch = html.match(/<meta\s+name=["']description["']\s+content=["']([\s\S]*?)["']/i)
 
