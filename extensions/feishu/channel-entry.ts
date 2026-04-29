@@ -6,7 +6,7 @@ export default defineBundledChannelEntry({
   description: "Feishu/Lark channel plugin",
   importMetaUrl: import.meta.url,
   plugin: {
-    specifier: "./api.js",
+    specifier: "./src/channel.js",
     exportName: "feishuPlugin",
   },
   secrets: {

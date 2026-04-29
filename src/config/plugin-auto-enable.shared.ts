@@ -219,8 +219,18 @@ function resolvePluginIdForChannel(
   return channelToPluginId.get(channelId) ?? channelId;
 }
 
+function shouldUseConfigOnlyPluginAutoEnable(env: NodeJS.ProcessEnv): boolean {
+  return (
+    env.OPENCLAW_PLUGIN_AUTO_ENABLE_CONFIG_ONLY === "1" ||
+    env.NCUTCLAW_PLUGIN_AUTO_ENABLE_CONFIG_ONLY === "1"
+  );
+}
+
 function collectCandidateChannelIds(cfg: OpenClawConfig, env: NodeJS.ProcessEnv): string[] {
-  return listPotentialConfiguredChannelIds(cfg, env).map(
+  const configOnly = shouldUseConfigOnlyPluginAutoEnable(env);
+  return listPotentialConfiguredChannelIds(cfg, env, {
+    ...(configOnly ? { includeEnv: false, includePersistedAuthState: false } : {}),
+  }).map(
     (channelId) => normalizeChatChannelId(channelId) ?? channelId,
   );
 }
@@ -281,7 +291,10 @@ function hasBrowserToolReference(cfg: OpenClawConfig): boolean {
     : false;
 }
 
-function hasSetupAutoEnableRelevantConfig(cfg: OpenClawConfig): boolean {
+function hasSetupAutoEnableRelevantConfig(
+  cfg: OpenClawConfig,
+  env: NodeJS.ProcessEnv,
+): boolean {
   const entries = cfg.plugins?.entries;
   if (isRecord(cfg.browser) || isRecord(cfg.acp) || hasBrowserToolReference(cfg)) {
     return true;
@@ -291,6 +304,9 @@ function hasSetupAutoEnableRelevantConfig(cfg: OpenClawConfig): boolean {
   }
   if (isRecord(cfg.tools?.web) && isRecord((cfg.tools.web as Record<string, unknown>).x_search)) {
     return true;
+  }
+  if (shouldUseConfigOnlyPluginAutoEnable(env)) {
+    return false;
   }
   return hasConfiguredPluginConfigEntry(cfg);
 }
@@ -360,7 +376,7 @@ export function configMayNeedPluginAutoEnable(
   if (hasConfiguredWebSearchPluginEntry(cfg) || hasConfiguredWebFetchPluginEntry(cfg)) {
     return true;
   }
-  if (!hasSetupAutoEnableRelevantConfig(cfg)) {
+  if (!hasSetupAutoEnableRelevantConfig(cfg, env)) {
     return false;
   }
   return (
@@ -470,10 +486,11 @@ export function resolveConfiguredPluginAutoEnableCandidates(params: {
     }
   }
 
-  if (hasSetupAutoEnableRelevantConfig(params.config)) {
+  if (hasSetupAutoEnableRelevantConfig(params.config, params.env)) {
     for (const entry of resolvePluginSetupAutoEnableReasons({
       config: params.config,
       env: params.env,
+      manifestRegistry: params.registry,
     })) {
       changes.push({
         pluginId: entry.pluginId,

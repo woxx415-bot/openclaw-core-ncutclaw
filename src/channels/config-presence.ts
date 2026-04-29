@@ -13,6 +13,7 @@ import { listBundledChannelPluginIds } from "./plugins/bundled-ids.js";
 const IGNORED_CHANNEL_CONFIG_KEYS = new Set(["defaults", "modelByChannel"]);
 
 type ChannelPresenceOptions = {
+  includeEnv?: boolean;
   includePersistedAuthState?: boolean;
   persistedAuthStateProbe?: {
     listChannelIds: () => readonly string[];
@@ -77,8 +78,8 @@ export function listPotentialConfiguredChannelIds(
   options: ChannelPresenceOptions = {},
 ): string[] {
   const configuredChannelIds = new Set<string>();
-  const channelIds = listBundledChannelPluginIds();
-  const channelEnvPrefixes = listChannelEnvPrefixes(channelIds);
+  const channelEnvPrefixes =
+    options.includeEnv === false ? [] : listChannelEnvPrefixes(listBundledChannelPluginIds());
   const channels = isRecord(cfg.channels) ? cfg.channels : null;
   if (channels) {
     for (const [key, value] of Object.entries(channels)) {
@@ -91,13 +92,15 @@ export function listPotentialConfiguredChannelIds(
     }
   }
 
-  for (const [key, value] of Object.entries(env)) {
-    if (!hasNonEmptyString(value)) {
-      continue;
-    }
-    for (const [prefix, channelId] of channelEnvPrefixes) {
-      if (key.startsWith(prefix)) {
-        configuredChannelIds.add(channelId);
+  if (options.includeEnv !== false) {
+    for (const [key, value] of Object.entries(env)) {
+      if (!hasNonEmptyString(value)) {
+        continue;
+      }
+      for (const [prefix, channelId] of channelEnvPrefixes) {
+        if (key.startsWith(prefix)) {
+          configuredChannelIds.add(channelId);
+        }
       }
     }
   }
@@ -118,14 +121,16 @@ function hasEnvConfiguredChannel(
   env: NodeJS.ProcessEnv,
   options: ChannelPresenceOptions = {},
 ): boolean {
-  const channelIds = listBundledChannelPluginIds();
-  const channelEnvPrefixes = listChannelEnvPrefixes(channelIds);
-  for (const [key, value] of Object.entries(env)) {
-    if (!hasNonEmptyString(value)) {
-      continue;
-    }
-    if (channelEnvPrefixes.some(([prefix]) => key.startsWith(prefix))) {
-      return true;
+  if (options.includeEnv !== false) {
+    const channelIds = listBundledChannelPluginIds();
+    const channelEnvPrefixes = listChannelEnvPrefixes(channelIds);
+    for (const [key, value] of Object.entries(env)) {
+      if (!hasNonEmptyString(value)) {
+        continue;
+      }
+      if (channelEnvPrefixes.some(([prefix]) => key.startsWith(prefix))) {
+        return true;
+      }
     }
   }
   if (options.includePersistedAuthState === false || !hasPersistedChannelState(env)) {

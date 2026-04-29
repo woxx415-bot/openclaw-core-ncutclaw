@@ -1,4 +1,6 @@
+import fs from "node:fs";
 import { loadPluginManifestRegistry } from "../plugins/manifest-registry.js";
+import { resolveBundledPluginPublicArtifactPath } from "../plugins/public-surface-loader.js";
 import { isRecord } from "../utils.js";
 import { loadBundledChannelSecurityContractApi } from "./channel-contract-api.js";
 
@@ -23,6 +25,9 @@ function listBundledChannelIds(): string[] {
 function collectChannelUnsupportedSecretRefSurfacePatterns(): string[] {
   const patterns: string[] = [];
   for (const channelId of listBundledChannelIds()) {
+    if (!channelSecurityContractMayExposeUnsupportedSecretRefPolicy(channelId)) {
+      continue;
+    }
     const contract = loadBundledChannelSecurityContractApi(channelId);
     patterns.push(...(contract?.unsupportedSecretRefSurfacePatterns ?? []));
   }
@@ -30,6 +35,33 @@ function collectChannelUnsupportedSecretRefSurfacePatterns(): string[] {
 }
 
 let cachedUnsupportedSecretRefSurfacePatterns: string[] | null = null;
+const securityContractPolicyPresenceCache = new Map<string, boolean>();
+
+function channelSecurityContractMayExposeUnsupportedSecretRefPolicy(channelId: string): boolean {
+  const cached = securityContractPolicyPresenceCache.get(channelId);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const artifactPath = resolveBundledPluginPublicArtifactPath({
+    dirName: channelId,
+    artifactBasename: "security-contract-api.js",
+  });
+  if (!artifactPath) {
+    securityContractPolicyPresenceCache.set(channelId, false);
+    return false;
+  }
+  try {
+    const raw = fs.readFileSync(artifactPath, "utf8");
+    const hasPolicy =
+      raw.includes("unsupportedSecretRefSurfacePatterns") ||
+      raw.includes("collectUnsupportedSecretRefConfigCandidates");
+    securityContractPolicyPresenceCache.set(channelId, hasPolicy);
+    return hasPolicy;
+  } catch {
+    securityContractPolicyPresenceCache.set(channelId, true);
+    return true;
+  }
+}
 
 export function getUnsupportedSecretRefSurfacePatterns(): string[] {
   cachedUnsupportedSecretRefSurfacePatterns ??= [
@@ -89,6 +121,9 @@ export function collectUnsupportedSecretRefConfigCandidates(
 
   if (isRecord(raw.channels)) {
     for (const channelId of Object.keys(raw.channels)) {
+      if (!channelSecurityContractMayExposeUnsupportedSecretRefPolicy(channelId)) {
+        continue;
+      }
       const contract = loadBundledChannelSecurityContractApi(channelId);
       const channelCandidates = contract?.collectUnsupportedSecretRefConfigCandidates?.(raw);
       if (!channelCandidates?.length) {

@@ -57,6 +57,19 @@ function resolveExplicitMemorySlotStartupPluginId(config: OpenClawConfig): strin
   return normalizePluginId(configuredSlot);
 }
 
+function resolveGatewayStartupPluginDenylist(env: NodeJS.ProcessEnv): Set<string> {
+  const raw =
+    env.OPENCLAW_GATEWAY_STARTUP_PLUGIN_DENYLIST ??
+    env.NCUTCLAW_GATEWAY_STARTUP_PLUGIN_DENYLIST ??
+    "";
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => normalizePluginId(entry))
+      .filter(Boolean),
+  );
+}
+
 function shouldConsiderForGatewayStartup(params: {
   plugin: PluginManifestRecord;
   startupDreamingPluginIds: ReadonlySet<string>;
@@ -142,6 +155,7 @@ export function resolveGatewayStartupPluginIds(params: {
   const activationSource = createPluginActivationSource({
     config: params.activationSourceConfig ?? params.config,
   });
+  const startupPluginDenylist = resolveGatewayStartupPluginDenylist(params.env);
   const startupDreamingPluginIds = resolveGatewayStartupDreamingPluginIds(params.config);
   const explicitMemorySlotStartupPluginId = resolveExplicitMemorySlotStartupPluginId(
     params.activationSourceConfig ?? params.config,
@@ -152,6 +166,9 @@ export function resolveGatewayStartupPluginIds(params: {
     env: params.env,
   })
     .plugins.filter((plugin) => {
+      if (startupPluginDenylist.has(plugin.id)) {
+        return false;
+      }
       if (plugin.channels.some((channelId) => configuredChannelIds.has(channelId))) {
         return true;
       }

@@ -8,7 +8,11 @@ import { type BackoffPolicy, computeBackoff, sleepWithAbort } from "../infra/bac
 import { createTaskScopedChannelRuntime } from "../infra/channel-runtime-context.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { resetDirectoryCache } from "../infra/outbound/target-resolver.js";
-import type { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  createSubsystemLogger,
+  runtimeForLogger,
+  type SubsystemLogger,
+} from "../logging/subsystem.js";
 import { resolveAccountEntry, resolveNormalizedAccountEntry } from "../routing/account-lookup.js";
 import {
   DEFAULT_ACCOUNT_ID,
@@ -26,8 +30,6 @@ const CHANNEL_RESTART_POLICY: BackoffPolicy = {
   jitter: 0.1,
 };
 const MAX_RESTART_ATTEMPTS = 10;
-
-type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 type ChannelRuntimeStore = {
   aborts: Map<string, AbortController>;
@@ -142,6 +144,17 @@ type StartChannelOptions = {
   preserveManualStop?: boolean;
 };
 
+function listManualStartChannelIds(): Set<string> {
+  const raw =
+    process.env.OPENCLAW_MANUAL_START_CHANNELS ?? process.env.NCUTCLAW_MANUAL_START_CHANNELS ?? "";
+  return new Set(
+    raw
+      .split(",")
+      .map((entry) => entry.trim().toLowerCase())
+      .filter(Boolean),
+  );
+}
+
 export type ChannelManager = {
   getRuntimeSnapshot: () => ChannelRuntimeSnapshot;
   startChannels: () => Promise<void>;
@@ -159,12 +172,42 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     opts;
 
   const channelStores = new Map<ChannelId, ChannelRuntimeStore>();
+  const lazyChannelLogs = new Map<ChannelId, SubsystemLogger>();
+  const lazyChannelRuntimeEnvs = new Map<ChannelId, RuntimeEnv>();
   // Tracks restart attempts per channel:account. Reset on successful start.
   const restartAttempts = new Map<string, number>();
   // Tracks accounts that were manually stopped so we don't auto-restart them.
   const manuallyStopped = new Set<string>();
 
   const restartKey = (channelId: ChannelId, accountId: string) => `${channelId}:${accountId}`;
+
+  const getChannelLog = (channelId: ChannelId): SubsystemLogger => {
+    const existing = channelLogs[channelId];
+    if (existing) {
+      return existing;
+    }
+    const cached = lazyChannelLogs.get(channelId);
+    if (cached) {
+      return cached;
+    }
+    const next = createSubsystemLogger("gateway/channels").child(channelId);
+    lazyChannelLogs.set(channelId, next);
+    return next;
+  };
+
+  const getChannelRuntimeEnv = (channelId: ChannelId): RuntimeEnv => {
+    const existing = channelRuntimeEnvs[channelId];
+    if (existing) {
+      return existing;
+    }
+    const cached = lazyChannelRuntimeEnvs.get(channelId);
+    if (cached) {
+      return cached;
+    }
+    const next = runtimeForLogger(getChannelLog(channelId));
+    lazyChannelRuntimeEnvs.set(channelId, next);
+    return next;
+  };
 
   const resolveAccountHealthMonitorOverride = (
     channelConfig: ChannelHealthMonitorConfig | undefined,
@@ -216,7 +259,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
       // This call exists solely to fail closed if resolver-side config loading is broken.
       plugin.config.resolveAccount(cfg, accountId);
     } catch (err) {
-      channelLogs[channelId].warn?.(
+      getChannelLog(channelId).warn?.(
         `[${channelId}:${accountId}] health-monitor: failed to resolve account; skipping monitor (${formatErrorMessage(err)})`,
       );
       return false;
@@ -297,7 +340,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
         const abort = new AbortController();
         store.aborts.set(id, abort);
         let handedOffTask = false;
-        const log = channelLogs[channelId];
+        const log = getChannelLog(channelId);
         let scopedChannelRuntime: ReturnType<typeof createTaskScopedChannelRuntime> | null = null;
         let channelRuntimeForTask: ChannelRuntimeSurface | undefined;
         let stopApprovalBootstrap: () => Promise<void> = async () => {};
@@ -394,7 +437,7 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
               cfg,
               accountId: id,
               account,
-              runtime: channelRuntimeEnvs[channelId],
+              runtime: getChannelRuntimeEnv(channelId),
               abortSignal: abort.signal,
               log,
               getStatus: () => getRuntime(channelId, id),
@@ -533,9 +576,9 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
             cfg,
             accountId: id,
             account,
-            runtime: channelRuntimeEnvs[channelId],
+            runtime: getChannelRuntimeEnv(channelId),
             abortSignal: abort?.signal ?? new AbortController().signal,
-            log: channelLogs[channelId],
+            log: getChannelLog(channelId),
             getStatus: () => getRuntime(channelId, id),
             setStatus: (next) => setRuntime(channelId, id, next),
           });
@@ -558,11 +601,16 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
   };
 
   const startChannels = async () => {
+    const manualStartChannels = listManualStartChannelIds();
     for (const plugin of listChannelPlugins()) {
+      if (manualStartChannels.has("*") || manualStartChannels.has(plugin.id.toLowerCase())) {
+        getChannelLog(plugin.id).info?.(`[${plugin.id}] auto-start skipped; manual start required`);
+        continue;
+      }
       try {
         await startChannel(plugin.id);
       } catch (err) {
-        channelLogs[plugin.id]?.error?.(
+        getChannelLog(plugin.id).error?.(
           `[${plugin.id}] channel startup failed: ${formatErrorMessage(err)}`,
         );
       }
@@ -598,7 +646,19 @@ export function createChannelManager(opts: ChannelManagerOptions): ChannelManage
     const cfg = loadConfig();
     const channels: ChannelRuntimeSnapshot["channels"] = {};
     const channelAccounts: ChannelRuntimeSnapshot["channelAccounts"] = {};
+    const pluginsById = new Map<ChannelId, NonNullable<ReturnType<typeof getChannelPlugin>>>();
     for (const plugin of listChannelPlugins()) {
+      pluginsById.set(plugin.id, plugin);
+    }
+    for (const channelId of channelStores.keys()) {
+      if (!pluginsById.has(channelId)) {
+        const plugin = getChannelPlugin(channelId);
+        if (plugin) {
+          pluginsById.set(channelId, plugin);
+        }
+      }
+    }
+    for (const plugin of pluginsById.values()) {
       const store = getStore(plugin.id);
       const accountIds = plugin.config.listAccountIds(cfg);
       const defaultAccountId = resolveChannelDefaultAccountId({

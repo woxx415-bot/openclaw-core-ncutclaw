@@ -547,6 +547,7 @@ async function runGatewayCommand(opts: GatewayRunOpts) {
           auth: authOverride,
           tailscale: tailscaleOverride,
           startupStartedAt,
+          configSnapshot: snapshot,
         }),
     });
 

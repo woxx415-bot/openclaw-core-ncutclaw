@@ -812,10 +812,12 @@ async function main() {
     try {
       const fetched = await fetchBySource(task, source)
       const provider = inferProvider(source)
-      // Direct Douyin URL imports are explicit user picks rather than
+      // Direct Douyin/Xiaohongshu URL imports are explicit user picks rather than
       // keyword search results, so keep the resource even if its title/
       // description don't literally contain every task keyword.
-      let matched = provider === 'douyin' ? fetched : matchKeywords(fetched, keywords)
+      let matched = (provider === 'douyin' || provider === 'xiaohongshu')
+        ? fetched
+        : matchKeywords(fetched, keywords)
 
       // Apply quality filters by resource type
       if (provider === 'semantic-scholar' || provider === 'scholar') {

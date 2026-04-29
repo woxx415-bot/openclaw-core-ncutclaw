@@ -629,7 +629,16 @@ function resolveSetupChannelRegistration(moduleExport: unknown): {
   }
   const setup = resolved as {
     plugin?: unknown;
+    loadSetupPlugin?: unknown;
   };
+  if (typeof setup.loadSetupPlugin === "function") {
+    const plugin = setup.loadSetupPlugin();
+    if (plugin && typeof plugin === "object") {
+      return {
+        plugin: plugin as ChannelPlugin,
+      };
+    }
+  }
   if (!setup.plugin || typeof setup.plugin !== "object") {
     return {};
   }
@@ -1604,7 +1613,12 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
         (registrationMode === "setup-only" || registrationMode === "setup-runtime") &&
         manifestRecord.setupSource
       ) {
-        const setupRegistration = resolveSetupChannelRegistration(mod);
+        const setupRegistration = profilePluginLoaderSync({
+          phase: "setup-channel-registration",
+          pluginId: record.id,
+          source: safeSource,
+          run: () => resolveSetupChannelRegistration(mod),
+        });
         if (setupRegistration.plugin) {
           if (setupRegistration.plugin.id && setupRegistration.plugin.id !== record.id) {
             pushPluginLoadError(
@@ -1618,7 +1632,12 @@ export function loadOpenClawPlugins(options: PluginLoadOptions = {}): PluginRegi
             hookPolicy: entry?.hooks,
             registrationMode,
           });
-          api.registerChannel(setupRegistration.plugin);
+          profilePluginLoaderSync({
+            phase: "setup-register-channel",
+            pluginId: record.id,
+            source: safeSource,
+            run: () => api.registerChannel(setupRegistration.plugin!),
+          });
           registry.plugins.push(record);
           seenIds.set(pluginId, candidate.origin);
           continue;

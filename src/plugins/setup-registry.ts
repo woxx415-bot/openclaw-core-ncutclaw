@@ -8,6 +8,7 @@ import { collectPluginConfigContractMatches } from "./config-contracts.js";
 import { discoverOpenClawPlugins } from "./discovery.js";
 import { getCachedPluginJitiLoader, type PluginJitiLoaderCache } from "./jiti-loader-cache.js";
 import { loadPluginManifestRegistry, type PluginManifestRecord } from "./manifest-registry.js";
+import type { PluginManifestRegistry } from "./manifest-registry.js";
 import { resolvePluginCacheInputs } from "./roots.js";
 import type { PluginRuntime } from "./runtime/types.js";
 import { listSetupCliBackendIds, listSetupProviderIds } from "./setup-descriptors.js";
@@ -71,6 +72,7 @@ const jitiLoaders: PluginJitiLoaderCache = new Map();
 const setupRegistryCache = new Map<string, PluginSetupRegistry>();
 const setupProviderCache = new Map<string, ProviderPlugin | null>();
 const setupCliBackendCache = new Map<string, SetupCliBackendEntry | null>();
+const setupApiAutoEnableProbePresenceCache = new Map<string, boolean>();
 let setupLookupCacheEntryCap = MAX_SETUP_LOOKUP_CACHE_ENTRIES;
 
 export const __testing = {
@@ -97,6 +99,7 @@ export function clearPluginSetupRegistryCache(): void {
   setupRegistryCache.clear();
   setupProviderCache.clear();
   setupCliBackendCache.clear();
+  setupApiAutoEnableProbePresenceCache.clear();
 }
 
 function getJiti(modulePath: string) {
@@ -209,6 +212,42 @@ function resolveSetupApiPath(rootDir: string): string | null {
   }
 
   return null;
+}
+
+function setupApiMayRegisterAutoEnableProbe(setupSource: string): boolean {
+  const cached = setupApiAutoEnableProbePresenceCache.get(setupSource);
+  if (cached !== undefined) {
+    return cached;
+  }
+  try {
+    const source = fs.readFileSync(setupSource, "utf8");
+    const present = source.includes("registerAutoEnableProbe");
+    setupApiAutoEnableProbePresenceCache.set(setupSource, present);
+    return present;
+  } catch {
+    setupApiAutoEnableProbePresenceCache.set(setupSource, true);
+    return true;
+  }
+}
+
+function resolveSetupAutoEnableProbePluginIds(params: {
+  workspaceDir?: string;
+  env: NodeJS.ProcessEnv;
+  manifestRegistry?: PluginManifestRegistry;
+}): string[] {
+  const manifestRegistry =
+    params.manifestRegistry ??
+    loadSetupManifestRegistry({
+      workspaceDir: params.workspaceDir,
+      env: params.env,
+    });
+  return manifestRegistry.plugins
+    .filter((record) => {
+      const setupSource = record.setupSource ?? resolveSetupApiPath(record.rootDir);
+      return setupSource ? setupApiMayRegisterAutoEnableProbe(setupSource) : false;
+    })
+    .map((record) => record.id)
+    .toSorted((left, right) => left.localeCompare(right));
 }
 
 function collectConfiguredPluginEntryIds(config: OpenClawConfig): string[] {
@@ -324,6 +363,7 @@ export function resolvePluginSetupRegistry(params?: {
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
   pluginIds?: readonly string[];
+  manifestRegistry?: PluginManifestRegistry;
 }): PluginSetupRegistry {
   const env = params?.env ?? process.env;
   const cacheKey = buildSetupRegistryCacheKey({
@@ -357,10 +397,12 @@ export function resolvePluginSetupRegistry(params?: {
   const providerKeys = new Set<string>();
   const cliBackendKeys = new Set<string>();
 
-  const manifestRegistry = loadSetupManifestRegistry({
-    workspaceDir: params?.workspaceDir,
-    env,
-  });
+  const manifestRegistry =
+    params?.manifestRegistry ??
+    loadSetupManifestRegistry({
+      workspaceDir: params?.workspaceDir,
+      env,
+    });
 
   for (const record of manifestRegistry.plugins) {
     if (selectedPluginIds && !selectedPluginIds.has(record.id)) {
@@ -689,14 +731,22 @@ export function resolvePluginSetupAutoEnableReasons(params: {
   config: OpenClawConfig;
   workspaceDir?: string;
   env?: NodeJS.ProcessEnv;
+  manifestRegistry?: PluginManifestRegistry;
 }): SetupAutoEnableReason[] {
   const env = params.env ?? process.env;
   const reasons: SetupAutoEnableReason[] = [];
   const seen = new Set<string>();
+  const pluginIds = resolveSetupAutoEnableProbePluginIds({
+    workspaceDir: params.workspaceDir,
+    env,
+    manifestRegistry: params.manifestRegistry,
+  });
 
   for (const entry of resolvePluginSetupRegistry({
     workspaceDir: params.workspaceDir,
     env,
+    pluginIds,
+    manifestRegistry: params.manifestRegistry,
   }).autoEnableProbes) {
     const raw = entry.probe({
       config: params.config,

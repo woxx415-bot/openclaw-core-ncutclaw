@@ -27,6 +27,18 @@ export async function prepareGatewayPluginBootstrap(params: {
   minimalTestGateway: boolean;
   log: GatewayPluginBootstrapLog;
 }) {
+  const startupProfileEnabled = process.env.OPENCLAW_GATEWAY_STARTUP_PROFILE === "1";
+  let startupProfileLast = Date.now();
+  const markStartupProfile = (label: string) => {
+    if (!startupProfileEnabled) {
+      return;
+    }
+    const now = Date.now();
+    params.log.info(
+      `[startup-profile] plugin bootstrap ${label}: +${now - startupProfileLast}ms`,
+    );
+    startupProfileLast = now;
+  };
   const startupMaintenanceConfig =
     params.cfgAtStart.channels === undefined && params.startupRuntimeConfig.channels !== undefined
       ? {
@@ -41,14 +53,17 @@ export async function prepareGatewayPluginBootstrap(params: {
       env: process.env,
       log: params.log,
     });
+    markStartupProfile("channel startup maintenance");
     await runStartupSessionMigration({
       cfg: params.cfgAtStart,
       env: process.env,
       log: params.log,
     });
+    markStartupProfile("session migration");
   }
 
   initSubagentRegistry();
+  markStartupProfile("subagent registry");
 
   const gatewayPluginConfigAtStart = params.minimalTestGateway
     ? params.cfgAtStart
@@ -56,8 +71,10 @@ export async function prepareGatewayPluginBootstrap(params: {
         config: params.cfgAtStart,
         env: process.env,
       }).config;
+  markStartupProfile("plugin auto-enable");
   const defaultAgentId = resolveDefaultAgentId(gatewayPluginConfigAtStart);
   const defaultWorkspaceDir = resolveAgentWorkspaceDir(gatewayPluginConfigAtStart, defaultAgentId);
+  markStartupProfile("workspace resolution");
   const deferredConfiguredChannelPluginIds = params.minimalTestGateway
     ? []
     : resolveConfiguredDeferredChannelPluginIds({
@@ -65,6 +82,7 @@ export async function prepareGatewayPluginBootstrap(params: {
         workspaceDir: defaultWorkspaceDir,
         env: process.env,
       });
+  markStartupProfile("deferred channel ids");
   const startupPluginIds = params.minimalTestGateway
     ? []
     : resolveGatewayStartupPluginIds({
@@ -73,6 +91,7 @@ export async function prepareGatewayPluginBootstrap(params: {
         workspaceDir: defaultWorkspaceDir,
         env: process.env,
       });
+  markStartupProfile("startup plugin ids");
 
   const baseMethods = listGatewayMethods();
   const emptyPluginRegistry = createEmptyPluginRegistry();
@@ -91,6 +110,7 @@ export async function prepareGatewayPluginBootstrap(params: {
       preferSetupRuntimeForChannelPlugins: deferredConfiguredChannelPluginIds.length > 0,
       suppressPluginInfoLogs: deferredConfiguredChannelPluginIds.length > 0,
     }));
+    markStartupProfile("load startup plugins");
   } else {
     pluginRegistry = getActivePluginRegistry() ?? emptyPluginRegistry;
     setActivePluginRegistry(pluginRegistry);

@@ -1,6 +1,5 @@
 import type { LegacyConfigRule } from "../../config/legacy.shared.js";
 import { listPluginDoctorLegacyConfigRules } from "../../plugins/doctor-contract-registry.js";
-import { getBootstrapChannelPlugin } from "./bootstrap-registry.js";
 import type { ChannelId } from "./types.public.js";
 
 function collectConfiguredChannelIds(raw: unknown): ChannelId[] {
@@ -18,15 +17,9 @@ function collectConfiguredChannelIds(raw: unknown): ChannelId[] {
 
 export function collectChannelLegacyConfigRules(raw?: unknown): LegacyConfigRule[] {
   const channelIds = collectConfiguredChannelIds(raw);
-  const rules: LegacyConfigRule[] = [];
-  for (const channelId of channelIds) {
-    const plugin = getBootstrapChannelPlugin(channelId);
-    if (!plugin) {
-      continue;
-    }
-    rules.push(...(plugin.doctor?.legacyConfigRules ?? []));
-  }
-  rules.push(...listPluginDoctorLegacyConfigRules({ pluginIds: channelIds }));
+  const rules: LegacyConfigRule[] = [
+    ...listPluginDoctorLegacyConfigRules({ pluginIds: channelIds }),
+  ];
 
   const seen = new Set<string>();
   return rules.filter((rule) => {

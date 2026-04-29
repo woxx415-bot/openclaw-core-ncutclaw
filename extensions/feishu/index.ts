@@ -15,7 +15,7 @@ function loadFeishuSubagentHooksModule() {
 
 function registerFeishuDocTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/docx.js",
     exportName: "registerFeishuDocTools",
   });
   register(api);
@@ -23,7 +23,7 @@ function registerFeishuDocTools(api: OpenClawPluginApi) {
 
 function registerFeishuChatTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/chat.js",
     exportName: "registerFeishuChatTools",
   });
   register(api);
@@ -31,7 +31,7 @@ function registerFeishuChatTools(api: OpenClawPluginApi) {
 
 function registerFeishuWikiTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/wiki.js",
     exportName: "registerFeishuWikiTools",
   });
   register(api);
@@ -39,7 +39,7 @@ function registerFeishuWikiTools(api: OpenClawPluginApi) {
 
 function registerFeishuDriveTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/drive.js",
     exportName: "registerFeishuDriveTools",
   });
   register(api);
@@ -47,7 +47,7 @@ function registerFeishuDriveTools(api: OpenClawPluginApi) {
 
 function registerFeishuPermTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/perm.js",
     exportName: "registerFeishuPermTools",
   });
   register(api);
@@ -55,7 +55,7 @@ function registerFeishuPermTools(api: OpenClawPluginApi) {
 
 function registerFeishuBitableTools(api: OpenClawPluginApi) {
   const register = loadBundledEntryExportSync<(api: OpenClawPluginApi) => void>(import.meta.url, {
-    specifier: "./api.js",
+    specifier: "./src/bitable.js",
     exportName: "registerFeishuBitableTools",
   });
   register(api);
@@ -67,7 +67,7 @@ export default defineBundledChannelEntry({
   description: "Feishu/Lark channel plugin",
   importMetaUrl: import.meta.url,
   plugin: {
-    specifier: "./api.js",
+    specifier: "./src/channel.js",
     exportName: "feishuPlugin",
   },
   secrets: {

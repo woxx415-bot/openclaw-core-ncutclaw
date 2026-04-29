@@ -1,6 +1,9 @@
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import {
+  applyPluginDoctorCompatibilityMigrations,
+  collectRelevantDoctorPluginIds,
+} from "../../../plugins/doctor-contract-registry.js";
 import { runPluginSetupConfigMigrations } from "../../../plugins/setup-registry.js";
-import { collectChannelDoctorCompatibilityMutations } from "./channel-doctor.js";
 import {
   normalizeLegacyBrowserConfig,
   normalizeLegacyCrossContextMessageConfig,
@@ -48,12 +51,12 @@ export function normalizeCompatibilityConfigValues(cfg: OpenClawConfig): {
   next = normalizeLegacyCrossContextMessageConfig(next, changes);
   next = normalizeLegacyMediaProviderOptions(next, changes);
   next = normalizeLegacyMistralModelMaxTokens(next, changes);
-  for (const mutation of collectChannelDoctorCompatibilityMutations(next)) {
-    if (mutation.changes.length === 0) {
-      continue;
-    }
-    next = mutation.config;
-    changes.push(...mutation.changes);
+  const pluginDoctorCompatibility = applyPluginDoctorCompatibilityMigrations(next, {
+    pluginIds: collectRelevantDoctorPluginIds(next),
+  });
+  if (pluginDoctorCompatibility.changes.length > 0) {
+    next = pluginDoctorCompatibility.config;
+    changes.push(...pluginDoctorCompatibility.changes);
   }
 
   return { config: next, changes };

@@ -59,28 +59,58 @@ function logGatewayPluginDiagnostics(params: {
   }
 }
 
+function shouldProfileGatewayPluginBootstrap(): boolean {
+  return process.env.OPENCLAW_GATEWAY_STARTUP_PROFILE === "1";
+}
+
+function profileGatewayPluginBootstrap<T>(
+  label: string,
+  log: Pick<GatewayPluginBootstrapLog, "info">,
+  run: () => T,
+): T {
+  if (!shouldProfileGatewayPluginBootstrap()) {
+    return run();
+  }
+  const start = Date.now();
+  try {
+    return run();
+  } finally {
+    log.info(`[startup-profile] gateway plugin load ${label}: +${Date.now() - start}ms`);
+  }
+}
+
 export function prepareGatewayPluginLoad(params: GatewayPluginBootstrapParams) {
   const activationSourceConfig = params.activationSourceConfig ?? params.cfg;
-  const autoEnabled = applyPluginAutoEnable({
-    config: activationSourceConfig,
-    env: process.env,
-  });
+  const autoEnabled = profileGatewayPluginBootstrap("auto-enable", params.log, () =>
+    applyPluginAutoEnable({
+      config: activationSourceConfig,
+      env: process.env,
+    }),
+  );
   const resolvedConfig = autoEnabled.config;
-  installGatewayPluginRuntimeEnvironment(resolvedConfig);
-  const loaded = loadGatewayPlugins({
-    cfg: resolvedConfig,
-    activationSourceConfig,
-    autoEnabledReasons: autoEnabled.autoEnabledReasons,
-    workspaceDir: params.workspaceDir,
-    log: params.log,
-    coreGatewayHandlers: params.coreGatewayHandlers,
-    baseMethods: params.baseMethods,
-    pluginIds: params.pluginIds,
-    preferSetupRuntimeForChannelPlugins: params.preferSetupRuntimeForChannelPlugins,
-    suppressPluginInfoLogs: params.suppressPluginInfoLogs,
-  });
-  params.beforePrimeRegistry?.(loaded.pluginRegistry);
-  primeConfiguredBindingRegistry({ cfg: resolvedConfig });
+  profileGatewayPluginBootstrap("install runtime environment", params.log, () =>
+    installGatewayPluginRuntimeEnvironment(resolvedConfig),
+  );
+  const loaded = profileGatewayPluginBootstrap("load gateway plugins", params.log, () =>
+    loadGatewayPlugins({
+      cfg: resolvedConfig,
+      activationSourceConfig,
+      autoEnabledReasons: autoEnabled.autoEnabledReasons,
+      workspaceDir: params.workspaceDir,
+      log: params.log,
+      coreGatewayHandlers: params.coreGatewayHandlers,
+      baseMethods: params.baseMethods,
+      pluginIds: params.pluginIds,
+      preferSetupRuntimeForChannelPlugins: params.preferSetupRuntimeForChannelPlugins,
+      suppressPluginInfoLogs: params.suppressPluginInfoLogs,
+    }),
+  );
+  profileGatewayPluginBootstrap("pin registry", params.log, () =>
+    params.beforePrimeRegistry?.(loaded.pluginRegistry),
+  );
+  profileGatewayPluginBootstrap("prime binding registry", params.log, () =>
+    primeConfiguredBindingRegistry({ cfg: resolvedConfig }),
+  );
   if ((params.logDiagnostics ?? true) && loaded.pluginRegistry.diagnostics.length > 0) {
     logGatewayPluginDiagnostics({
       diagnostics: loaded.pluginRegistry.diagnostics,

@@ -5,6 +5,8 @@ const mocks = vi.hoisted(() => ({
   loadConfig: vi.fn(() => ({})),
   applyPluginAutoEnable: vi.fn(),
   listChannelPlugins: vi.fn(),
+  getChannelPlugin: vi.fn(),
+  normalizeChannelId: vi.fn((value: string) => value),
   buildChannelUiCatalog: vi.fn(),
   buildChannelAccountSnapshot: vi.fn(),
   getChannelActivity: vi.fn(),
@@ -25,8 +27,8 @@ vi.mock("../../config/plugin-auto-enable.js", () => ({
 
 vi.mock("../../channels/plugins/index.js", () => ({
   listChannelPlugins: mocks.listChannelPlugins,
-  getChannelPlugin: vi.fn(),
-  normalizeChannelId: (value: string) => value,
+  getChannelPlugin: mocks.getChannelPlugin,
+  normalizeChannelId: mocks.normalizeChannelId,
 }));
 
 vi.mock("../../channels/plugins/catalog.js", () => ({
@@ -68,6 +70,7 @@ describe("channelsHandlers channels.status", () => {
     vi.clearAllMocks();
     mocks.loadConfig.mockReturnValue({});
     mocks.applyPluginAutoEnable.mockImplementation(({ config }) => ({ config, changes: [] }));
+    mocks.normalizeChannelId.mockImplementation((value: string) => value);
     mocks.buildChannelUiCatalog.mockReturnValue({
       order: ["whatsapp"],
       labels: { whatsapp: "WhatsApp" },
@@ -83,6 +86,7 @@ describe("channelsHandlers channels.status", () => {
       inboundAt: null,
       outboundAt: null,
     });
+    mocks.getChannelPlugin.mockReturnValue(undefined);
     mocks.listChannelPlugins.mockReturnValue([
       {
         id: "whatsapp",
@@ -129,6 +133,109 @@ describe("channelsHandlers channels.status", () => {
           }),
         },
       }),
+      undefined,
+    );
+  });
+
+  it("returns runtime-only channels after lazy manual start", async () => {
+    mocks.listChannelPlugins.mockReturnValue([]);
+    mocks.buildChannelUiCatalog.mockReturnValue({
+      order: [],
+      labels: {},
+      detailLabels: {},
+      systemImages: {},
+      entries: {},
+    });
+    const respond = vi.fn();
+
+    await channelsHandlers["channels.status"](
+      createOptions(
+        { probe: false, timeoutMs: 2000 },
+        {
+          respond,
+          context: {
+            getRuntimeSnapshot: () => ({
+              channels: {
+                feishu: {
+                  accountId: "default",
+                  configured: true,
+                  running: true,
+                  connected: true,
+                },
+              },
+              channelAccounts: {
+                feishu: {
+                  default: {
+                    accountId: "default",
+                    configured: true,
+                    running: true,
+                    connected: true,
+                  },
+                },
+              },
+            }),
+          } as GatewayRequestHandlerOptions["context"],
+        },
+      ),
+    );
+
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({
+        channels: {
+          feishu: expect.objectContaining({
+            running: true,
+            connected: true,
+          }),
+        },
+        channelAccounts: {
+          feishu: [
+            expect.objectContaining({
+              accountId: "default",
+              running: true,
+            }),
+          ],
+        },
+        channelDefaultAccountId: {
+          feishu: "default",
+        },
+      }),
+      undefined,
+    );
+  });
+
+  it("starts a lazy bundled channel that is not in the loaded channel registry", async () => {
+    const startChannel = vi.fn(async () => undefined);
+    mocks.normalizeChannelId.mockReturnValue(null);
+    mocks.getChannelPlugin.mockImplementation((id: string) =>
+      id === "feishu"
+        ? {
+            id: "feishu",
+            gateway: {
+              startAccount: vi.fn(),
+            },
+          }
+        : undefined,
+    );
+    const respond = vi.fn();
+
+    await channelsHandlers["channels.start"](
+      createOptions(
+        { channel: "feishu" },
+        {
+          respond,
+          context: {
+            getRuntimeSnapshot: () => ({ channels: {}, channelAccounts: {} }),
+            startChannel,
+          } as unknown as GatewayRequestHandlerOptions["context"],
+        },
+      ),
+    );
+
+    expect(startChannel).toHaveBeenCalledWith("feishu", undefined);
+    expect(respond).toHaveBeenCalledWith(
+      true,
+      { channel: "feishu", accountId: null },
       undefined,
     );
   });

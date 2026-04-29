@@ -33,6 +33,21 @@ type ChannelLogoutPayload = {
   [key: string]: unknown;
 };
 
+function resolveAvailableChannelId(raw: unknown): ChannelId | null {
+  if (typeof raw !== "string") {
+    return null;
+  }
+  const normalized = normalizeChannelId(raw);
+  if (normalized) {
+    return normalized;
+  }
+  const candidate = normalizeOptionalString(raw)?.toLowerCase();
+  if (!candidate) {
+    return null;
+  }
+  return getChannelPlugin(candidate as ChannelId)?.id ?? null;
+}
+
 export async function logoutChannelAccount(params: {
   channelId: ChannelId;
   accountId?: string | null;
@@ -70,6 +85,64 @@ export async function logoutChannelAccount(params: {
 }
 
 export const channelsHandlers: GatewayRequestHandlers = {
+  "channels.start": async ({ params, respond, context }) => {
+    const rawChannel = (params as { channel?: unknown }).channel;
+    const channelId = resolveAvailableChannelId(rawChannel);
+    if (!channelId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid channels.start channel"),
+      );
+      return;
+    }
+    const plugin = getChannelPlugin(channelId);
+    if (!plugin?.gateway?.startAccount) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, `channel ${channelId} does not support start`),
+      );
+      return;
+    }
+    const accountIdRaw = (params as { accountId?: unknown }).accountId;
+    const accountId = normalizeOptionalString(accountIdRaw);
+    try {
+      await context.startChannel(channelId, accountId);
+      respond(true, { channel: channelId, accountId: accountId || null }, undefined);
+    } catch (err) {
+      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
+    }
+  },
+  "channels.stop": async ({ params, respond, context }) => {
+    const rawChannel = (params as { channel?: unknown }).channel;
+    const channelId = resolveAvailableChannelId(rawChannel);
+    if (!channelId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "invalid channels.stop channel"),
+      );
+      return;
+    }
+    const plugin = getChannelPlugin(channelId);
+    if (!plugin) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, `channel ${channelId} is not available`),
+      );
+      return;
+    }
+    const accountIdRaw = (params as { accountId?: unknown }).accountId;
+    const accountId = normalizeOptionalString(accountIdRaw);
+    try {
+      await context.stopChannel(channelId, accountId);
+      respond(true, { channel: channelId, accountId: accountId || null }, undefined);
+    } catch (err) {
+      respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, formatForLog(err)));
+    }
+  },
   "channels.status": async ({ params, respond, context }) => {
     if (!validateChannelsStatusParams(params)) {
       respond(
@@ -238,6 +311,30 @@ export const channelsHandlers: GatewayRequestHandlers = {
       defaultAccountIdMap[plugin.id] = defaultAccountId;
     }
 
+    const runtimeOnlyChannelIds = new Set<string>([
+      ...Object.keys(runtime.channels),
+      ...Object.keys(runtime.channelAccounts),
+    ]);
+    for (const runtimeChannelId of runtimeOnlyChannelIds) {
+      if (Object.prototype.hasOwnProperty.call(channelsMap, runtimeChannelId)) {
+        continue;
+      }
+      const runtimeAccounts = Object.values(
+        runtime.channelAccounts[runtimeChannelId as ChannelId] ?? {},
+      );
+      const defaultRuntime = runtime.channels[runtimeChannelId as ChannelId];
+      const defaultAccount = defaultRuntime ?? runtimeAccounts[0];
+      const defaultAccountId = defaultAccount?.accountId ?? DEFAULT_ACCOUNT_ID;
+      channelsMap[runtimeChannelId] = defaultAccount ?? { configured: false };
+      accountsMap[runtimeChannelId] =
+        runtimeAccounts.length > 0
+          ? runtimeAccounts
+          : defaultAccount
+            ? [defaultAccount]
+            : [];
+      defaultAccountIdMap[runtimeChannelId] = defaultAccountId;
+    }
+
     respond(true, payload, undefined);
   },
   "channels.logout": async ({ params, respond, context }) => {
@@ -253,7 +350,7 @@ export const channelsHandlers: GatewayRequestHandlers = {
       return;
     }
     const rawChannel = (params as { channel?: unknown }).channel;
-    const channelId = typeof rawChannel === "string" ? normalizeChannelId(rawChannel) : null;
+    const channelId = resolveAvailableChannelId(rawChannel);
     if (!channelId) {
       respond(
         false,

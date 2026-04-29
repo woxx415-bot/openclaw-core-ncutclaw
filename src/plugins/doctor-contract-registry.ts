@@ -42,6 +42,7 @@ type PluginManifestRegistryRecord = ReturnType<
 const jitiLoaders: PluginJitiLoaderCache = new Map();
 const doctorContractCache = new Map<string, PluginDoctorContractEntry[]>();
 const doctorContractRecordCache = new Map<string, Map<string, PluginDoctorContractEntry | null>>();
+const contractCompatibilityPresenceCache = new Map<string, boolean>();
 
 function getJiti(modulePath: string) {
   return getCachedPluginJitiLoader({
@@ -100,6 +101,23 @@ function resolveContractApiPath(rootDir: string): string | null {
     }
   }
   return null;
+}
+
+function contractApiMayExposeCompatibilityRules(modulePath: string): boolean {
+  const cached = contractCompatibilityPresenceCache.get(modulePath);
+  if (cached !== undefined) {
+    return cached;
+  }
+  try {
+    const raw = fs.readFileSync(modulePath, "utf8");
+    const hasCompatibilityExport =
+      raw.includes("legacyConfigRules") || raw.includes("normalizeCompatibilityConfig");
+    contractCompatibilityPresenceCache.set(modulePath, hasCompatibilityExport);
+    return hasCompatibilityExport;
+  } catch {
+    contractCompatibilityPresenceCache.set(modulePath, true);
+    return true;
+  }
 }
 
 function coerceLegacyConfigRules(value: unknown): LegacyConfigRule[] {
@@ -184,6 +202,10 @@ function loadPluginDoctorContractEntry(
 
   const contractSource = resolveContractApiPath(record.rootDir);
   if (!contractSource) {
+    cache.set(record.id, null);
+    return null;
+  }
+  if (!contractApiMayExposeCompatibilityRules(contractSource)) {
     cache.set(record.id, null);
     return null;
   }
@@ -277,6 +299,7 @@ function resolvePluginDoctorContracts(params?: {
 export function clearPluginDoctorContractRegistryCache(): void {
   doctorContractCache.clear();
   doctorContractRecordCache.clear();
+  contractCompatibilityPresenceCache.clear();
   jitiLoaders.clear();
 }
 

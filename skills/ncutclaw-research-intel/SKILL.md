@@ -48,8 +48,11 @@ emoji: 📚
     - `github` — GitHub 仓库搜索
     - `youtube` — YouTube 视频搜索
     - `bilibili` — B站视频搜索
-    - `xiaohongshu` — 小红书 URL 导入
-    - `douyin` — 抖音 URL 导入
+    - `platform-search` — 已登录平台关键词搜索，需要 `platform: "douyin" | "xiaohongshu"`；抖音、小红书关键词搜索优先用这个
+    - `douyin_search` — 抖音关键词搜索的快捷类型（等价于 `platform-search + platform:"douyin"`）
+    - `xiaohongshu_search` — 小红书关键词搜索的快捷类型（等价于 `platform-search + platform:"xiaohongshu"`）
+    - `xiaohongshu` — 小红书 URL 导入；如果没有 URL 则按关键词搜索处理
+    - `douyin` — 抖音 URL 导入；如果没有 URL 则按关键词搜索处理
     - `scholar` — Google Scholar
   - label: 显示标签，通常与 type 相同
   - url: (可选) 自定义 URL，不提供则自动根据关键词生成；但 `xiaohongshu` / `douyin` 当前为 URL 导入模式，必须显式提供
@@ -104,11 +107,12 @@ emoji: 📚
 - "大语言模型" / "LLM" → keywords: ["大语言模型", "large language model", "LLM"]
 - "arxiv上的" / "论文" → sources 包含 arxiv
 - "论文和代码" → sources 包含 arxiv + github
+- "论文和资讯" / "资讯日报" / "最新动态" / "科技新闻" → sources 至少包含 arxiv + semantic_scholar + github + bilibili + `{ "type": "platform-search", "platform": "douyin", "label": "douyin", "max": 5 }`
 - "B站" / "bilibili" → sources 包含 bilibili
 - "YouTube" → sources 包含 youtube
 - "小红书" + 具体 URL → sources 包含 `{type:"xiaohongshu", url:"..."}`
 - "抖音" + 具体 URL → sources 包含 `{type:"douyin", url:"..."}`
-- 仅提到"小红书"或"抖音"但没有 URL → 不要假装能搜索，提示用户提供具体链接
+- 仅提到"小红书"或"抖音"但没有 URL → 使用 `{ "type": "platform-search", "platform": "xiaohongshu|douyin", "label": "...", "max": 5 }`；不要要求用户提供 URL
 - "马上执行" / "立即运行" / "现在就跑" → action 应为 "create_and_run"
 - "先创建" / "不用立即执行" → action 应为 "create"
 - "下载论文" / "下载PDF" → 默认行为，系统会自动下载可获取的 PDF

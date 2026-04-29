@@ -5,6 +5,7 @@ import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js
 import { createDefaultDeps } from "../cli/deps.js";
 import { isRestartEnabled } from "../config/commands.flags.js";
 import {
+  type ConfigFileSnapshot,
   type OpenClawConfig,
   applyConfigOverrides,
   getRuntimeConfig,
@@ -196,6 +197,11 @@ export type GatewayServerOptions = {
    * Optional startup timestamp used for concise readiness logging.
    */
   startupStartedAt?: number;
+  /**
+   * Pre-read config snapshot from the CLI layer. Reusing it avoids a second
+   * full config/materialization pass during gateway boot.
+   */
+  configSnapshot?: ConfigFileSnapshot | null;
 };
 
 export async function startGatewayServer(
@@ -204,6 +210,19 @@ export async function startGatewayServer(
 ): Promise<GatewayServer> {
   const minimalTestGateway =
     process.env.VITEST === "1" && process.env.OPENCLAW_TEST_MINIMAL_GATEWAY === "1";
+  const startupProfileEnabled = process.env.OPENCLAW_GATEWAY_STARTUP_PROFILE === "1";
+  const startupProfileBase = opts.startupStartedAt ?? Date.now();
+  let startupProfileLast = Date.now();
+  const markStartupProfile = (label: string) => {
+    if (!startupProfileEnabled) {
+      return;
+    }
+    const now = Date.now();
+    log.info(
+      `[startup-profile] ${label}: +${now - startupProfileLast}ms (${now - startupProfileBase}ms total)`,
+    );
+    startupProfileLast = now;
+  };
 
   // Ensure all default port derivations (browser/canvas) see the actual runtime port.
   process.env.OPENCLAW_GATEWAY_PORT = String(port);
@@ -219,7 +238,9 @@ export async function startGatewayServer(
   const configSnapshot = await loadGatewayStartupConfigSnapshot({
     minimalTestGateway,
     log,
+    configSnapshot: opts.configSnapshot,
   });
+  markStartupProfile("load startup config");
 
   const emitSecretsStateEvent = (
     code: "SECRETS_RELOADER_DEGRADED" | "SECRETS_RELOADER_RECOVERED",
@@ -245,6 +266,7 @@ export async function startGatewayServer(
     tailscaleOverride: opts.tailscale,
     activateRuntimeSecrets,
   });
+  markStartupProfile("prepare startup config/auth/secrets");
   cfgAtStart = authBootstrap.cfg;
   if (authBootstrap.generatedToken) {
     if (authBootstrap.persistedGeneratedToken) {
@@ -278,6 +300,7 @@ export async function startGatewayServer(
         writeConfig: writeConfigFile,
         log,
       });
+  markStartupProfile("control ui startup seed");
   cfgAtStart = controlUiSeed.config;
   if (authBootstrap.persistedGeneratedToken || controlUiSeed.persistedAllowedOriginsSeed) {
     const startupSnapshot = await readConfigFileSnapshot();
@@ -289,6 +312,7 @@ export async function startGatewayServer(
     minimalTestGateway,
     log,
   });
+  markStartupProfile("prepare plugin bootstrap");
   const {
     gatewayPluginConfigAtStart,
     defaultWorkspaceDir,
@@ -303,6 +327,7 @@ export async function startGatewayServer(
   const channelRuntimeEnvs = Object.fromEntries(
     Object.entries(channelLogs).map(([id, logger]) => [id, runtimeForLogger(logger)]),
   ) as unknown as Record<ChannelId, RuntimeEnv>;
+  markStartupProfile("prepare channel runtime maps");
   const listActiveGatewayMethods = (nextBaseGatewayMethods: string[]) =>
     Array.from(
       new Set([
@@ -321,6 +346,7 @@ export async function startGatewayServer(
     auth: opts.auth,
     tailscale: opts.tailscale,
   });
+  markStartupProfile("resolve gateway runtime config");
   const {
     bindHost,
     controlUiEnabled,
@@ -382,6 +408,7 @@ export async function startGatewayServer(
     gatewayRuntime,
     log,
   });
+  markStartupProfile("resolve control ui root");
 
   const wizardRunner = opts.wizardRunner ?? runSetupWizard;
   const { wizardSessions, findRunningWizard, purgeWizardSession } = createWizardSessionTracker();
@@ -408,6 +435,7 @@ export async function startGatewayServer(
     channelManager,
     startedAt: serverStartedAt,
   });
+  markStartupProfile("prepare server dependencies");
   log.info("starting HTTP server...");
   const {
     canvasHost,
@@ -459,6 +487,7 @@ export async function startGatewayServer(
     logPlugins,
     getReadiness,
   });
+  markStartupProfile("create http/ws runtime state");
   const {
     nodeRegistry,
     nodePresenceTimers,
@@ -485,6 +514,7 @@ export async function startGatewayServer(
     gatewayMethods: listActiveGatewayMethods(baseGatewayMethods),
   });
   deps.cron = runtimeState.cronState.cron;
+  markStartupProfile("create live runtime state");
 
   const runClosePrelude = async () =>
     await runGatewayClosePrelude({
@@ -574,6 +604,7 @@ export async function startGatewayServer(
       },
       loadConfig,
     });
+    markStartupProfile("start early runtime");
     runtimeState.mcpServer = earlyRuntime.mcpServer;
     runtimeState.bonjourStop = earlyRuntime.bonjourStop;
     runtimeState.skillsChangeUnsub = earlyRuntime.skillsChangeUnsub;
@@ -689,7 +720,10 @@ export async function startGatewayServer(
     setFallbackGatewayContextResolver(() => gatewayRequestContext);
 
     if (!minimalTestGateway) {
-      if (deferredConfiguredChannelPluginIds.length > 0) {
+      if (
+        deferredConfiguredChannelPluginIds.length > 0 &&
+        process.env.OPENCLAW_SKIP_DEFERRED_CHANNEL_FULL_LOAD !== "1"
+      ) {
         ({ pluginRegistry, gatewayMethods: baseGatewayMethods } = reloadDeferredGatewayPlugins({
           cfg: gatewayPluginConfigAtStart,
           workspaceDir: defaultWorkspaceDir,
@@ -726,6 +760,7 @@ export async function startGatewayServer(
       broadcast,
       context: gatewayRequestContext,
     });
+    markStartupProfile("attach gateway ws handlers");
     ({
       stopGatewayUpdateCheck: runtimeState.stopGatewayUpdateCheck,
       tailscaleCleanup: runtimeState.tailscaleCleanup,
@@ -754,6 +789,8 @@ export async function startGatewayServer(
       logChannels,
       unavailableGatewayMethods,
     }));
+    markStartupProfile("start post-attach runtime");
+    authBootstrap.deferredStartupSecretsActivation?.();
 
     runtimeState.configReloader = startManagedGatewayConfigReloader({
       minimalTestGateway,

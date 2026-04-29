@@ -24,6 +24,9 @@
       "./index.ts"
     ],
     "setupEntry": "./setup-entry.ts",
+    "startup": {
+      "deferConfiguredChannelFullLoadUntilAfterListen": true
+    },
     "channel": {
       "id": "feishu",
       "label": "Feishu",

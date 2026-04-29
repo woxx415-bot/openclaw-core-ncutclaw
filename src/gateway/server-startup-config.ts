@@ -7,6 +7,7 @@ import {
   applyConfigOverrides,
   isNixMode,
   readConfigFileSnapshot,
+  setRuntimeConfigSnapshot,
   writeConfigFile,
 } from "../config/config.js";
 import { formatConfigIssueLines } from "../config/issue-format.js";
@@ -47,11 +48,18 @@ type GatewayStartupConfigOverrides = {
   tailscale?: GatewayTailscaleConfig;
 };
 
+export type GatewayStartupAuthBootstrap = Awaited<
+  ReturnType<typeof ensureGatewayStartupAuth>
+> & {
+  deferredStartupSecretsActivation?: () => void;
+};
+
 export async function loadGatewayStartupConfigSnapshot(params: {
   minimalTestGateway: boolean;
   log: GatewayStartupLog;
+  configSnapshot?: ConfigFileSnapshot | null;
 }): Promise<ConfigFileSnapshot> {
-  let configSnapshot = await readConfigFileSnapshot();
+  let configSnapshot = params.configSnapshot ?? (await readConfigFileSnapshot());
   if (configSnapshot.legacyIssues.length > 0 && isNixMode) {
     throw new Error(
       "Legacy config entries detected while running in Nix mode. Update your Nix config to the latest schema and restart.",
@@ -176,10 +184,42 @@ export async function prepareGatewayStartupConfig(params: {
   authOverride?: GatewayAuthConfig;
   tailscaleOverride?: GatewayTailscaleConfig;
   activateRuntimeSecrets: ActivateRuntimeSecrets;
-}): Promise<Awaited<ReturnType<typeof ensureGatewayStartupAuth>>> {
+}): Promise<GatewayStartupAuthBootstrap> {
   assertValidGatewayStartupConfigSnapshot(params.configSnapshot);
 
   const runtimeConfig = applyConfigOverrides(params.configSnapshot.config);
+  if (
+    shouldDeferGatewayStartupSecrets({
+      config: runtimeConfig,
+      authOverride: params.authOverride,
+      tailscaleOverride: params.tailscaleOverride,
+    })
+  ) {
+    const authBootstrap = await ensureGatewayStartupAuth({
+      cfg: runtimeConfig,
+      env: process.env,
+      authOverride: params.authOverride,
+      tailscaleOverride: params.tailscaleOverride,
+      persist: true,
+      baseHash: params.configSnapshot.hash,
+    });
+    setRuntimeConfigSnapshot(authBootstrap.cfg, params.configSnapshot.config);
+    return {
+      ...authBootstrap,
+      cfg: authBootstrap.cfg,
+      deferredStartupSecretsActivation: () => {
+        const timer = setTimeout(() => {
+          void params
+            .activateRuntimeSecrets(authBootstrap.cfg, {
+              reason: "reload",
+              activate: true,
+            })
+            .catch(() => undefined);
+        }, 5000);
+        timer.unref?.();
+      },
+    };
+  }
   const startupPreflightConfig = applyGatewayAuthOverridesForStartupPreflight(runtimeConfig, {
     auth: params.authOverride,
     tailscale: params.tailscaleOverride,
@@ -226,6 +266,22 @@ export async function prepareGatewayStartupConfig(params: {
     ...authBootstrap,
     cfg: activatedConfig,
   };
+}
+
+function shouldDeferGatewayStartupSecrets(params: {
+  config: OpenClawConfig;
+  authOverride?: GatewayAuthConfig;
+  tailscaleOverride?: GatewayTailscaleConfig;
+}): boolean {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DEFER_STARTUP_SECRETS)) {
+    return false;
+  }
+  if (params.authOverride || params.tailscaleOverride) {
+    return false;
+  }
+  const authMode = params.config.gateway?.auth?.mode;
+  const tailscaleMode = params.config.gateway?.tailscale?.mode ?? "off";
+  return authMode === "none" && tailscaleMode === "off";
 }
 
 function pruneSkippedStartupSecretSurfaces(config: OpenClawConfig): OpenClawConfig {
