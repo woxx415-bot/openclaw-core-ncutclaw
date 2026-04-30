@@ -150,7 +150,14 @@ async function main() {
     return
   }
 
-  const today = new Date().toISOString().slice(0, 10)
+  // Honour --date from the parent (research.ts threads runDate so all four
+  // scripts in one pass land in the same directory). Fall back to local
+  // YYYY-MM-DD for ad-hoc CLI runs — UTC slice diverged from the user's
+  // wall clock around midnight CST.
+  const dateIdx = process.argv.indexOf('--date')
+  const today = dateIdx !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[dateIdx + 1] || '')
+    ? process.argv[dateIdx + 1]
+    : new Date().toLocaleDateString('en-CA')
   const outputDir = join(expandStorageDir(task), today)
   mkdirSync(outputDir, { recursive: true })
 

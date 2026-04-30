@@ -143,8 +143,13 @@ async function main() {
     process.exit(1)
   }
 
-  // Find today's briefing
-  const today = new Date().toISOString().slice(0, 10)
+  // Find today's briefing — honour --date from research.ts so this lines
+  // up with whatever generate-briefing.mjs wrote moments earlier (UTC slice
+  // missed the briefing for tasks that crossed midnight CST during the run).
+  const dateIdx = process.argv.indexOf('--date')
+  const today = dateIdx !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[dateIdx + 1] || '')
+    ? process.argv[dateIdx + 1]
+    : new Date().toLocaleDateString('en-CA')
   let storageDir = task.storageDir
   if (storageDir && storageDir.startsWith('~')) {
     storageDir = join(homedir(), storageDir.slice(1))

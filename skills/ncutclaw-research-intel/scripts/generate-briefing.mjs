@@ -51,7 +51,14 @@ async function main() {
   const task = JSON.parse(readFileSync(taskPath, 'utf-8'))
   const port = portIdx !== -1 ? process.argv[portIdx + 1] : '18789'
   
-  const today = new Date().toISOString().slice(0, 10)
+  // Honour --date from research.ts (locked to the run's start so this
+  // matches whatever fetch-rss/fetch-web wrote into a few seconds earlier).
+  // Local YYYY-MM-DD fallback for ad-hoc CLI; UTC slice broke the
+  // briefing/scrap-folder pairing for users running near midnight CST.
+  const dateIdx = process.argv.indexOf('--date')
+  const today = dateIdx !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[dateIdx + 1] || '')
+    ? process.argv[dateIdx + 1]
+    : new Date().toLocaleDateString('en-CA')
   
   let storageDir = task.storageDir
   if (storageDir && storageDir.startsWith('~')) {

@@ -796,7 +796,14 @@ async function main() {
     return
   }
 
-  const outputDir = join(expandStorageDir(task), new Date().toISOString().slice(0, 10))
+  // Honour --date from the parent (research.ts threads runDate). Local
+  // YYYY-MM-DD fallback for ad-hoc CLI runs; UTC slice was racing the
+  // user's wall clock around midnight CST.
+  const dateIdx = process.argv.indexOf('--date')
+  const today = dateIdx !== -1 && /^\d{4}-\d{2}-\d{2}$/.test(process.argv[dateIdx + 1] || '')
+    ? process.argv[dateIdx + 1]
+    : new Date().toLocaleDateString('en-CA')
+  const outputDir = join(expandStorageDir(task), today)
   mkdirSync(outputDir, { recursive: true })
 
   const keywords = (task.keywords || []).map((k) => String(k).toLowerCase())
