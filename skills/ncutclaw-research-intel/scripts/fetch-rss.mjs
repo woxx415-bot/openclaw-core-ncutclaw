@@ -216,8 +216,11 @@ async function main() {
         const year = new Date(item.date).getFullYear()
         return Number.isNaN(year) || year >= minYear
       })
-      // Fall back to all if too few recent results
-      const filtered = recentItems.length >= 3 ? recentItems : keywordMatched
+      // Fall back to all if too few recent results. Threshold 5 implements
+      // the user's "论文 5 个" rule — only apply the strict <2-year filter
+      // once we have at least 5 recent matches; below that, the niche
+      // arxiv query is too narrow to filter and we return everything.
+      const filtered = recentItems.length >= 5 ? recentItems : keywordMatched
 
       console.log(`[fetch-rss] Matched ${keywordMatched.length} items, ${recentItems.length} recent (>=${minYear}), keeping ${filtered.length}`)
 

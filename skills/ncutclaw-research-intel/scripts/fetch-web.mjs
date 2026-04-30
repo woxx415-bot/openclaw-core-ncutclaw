@@ -267,9 +267,16 @@ function filterRecentPapers(resources, minCount = 5) {
 
 /**
  * Filter videos by quality signals: minimum view count and duration.
- * Keeps at least minCount results even if they don't meet thresholds.
+ * If at least `minCount` items pass the thresholds, return only those
+ * (sorted by play desc). Otherwise fall back to "all sorted by play".
+ *
+ * minCount default 3 implements the user's "超过三个就挑高质量" rule for
+ * non-paper sources — once a source returns more than ~3 items the
+ * filter starts kicking in; below that everything is returned because
+ * filtering 1–2 items defeats the point. Papers use minCount=5 via
+ * filterRecentPapers / fetch-rss recency gate.
  */
-function filterVideoQuality(resources, minCount = 5) {
+function filterVideoQuality(resources, minCount = 3) {
   const MIN_VIEWS = 100       // minimum play count
   const MIN_DURATION_SEC = 60 // minimum 1 minute (filter out very short clips)
 
@@ -290,6 +297,32 @@ function filterVideoQuality(resources, minCount = 5) {
 
   // Not enough quality results, sort all by views and return
   scored.sort((a, b) => b.play - a.play)
+  return scored.map((s) => s.resource)
+}
+
+/**
+ * Filter GitHub repos by quality signals: minimum stargazer count.
+ * GitHub's search API URL already passes `&sort=stars`, so input is
+ * descending by stars; we only need to drop low-quality tail entries.
+ * Same minCount=3 escape hatch as filterVideoQuality so a niche topic
+ * with only 1–2 high-star repos doesn't return an empty list.
+ */
+function filterRepoQuality(resources, minCount = 3) {
+  const MIN_STARS = 50
+
+  const scored = resources.map((r) => ({
+    resource: r,
+    stars: Number(r.meta?.stars) || 0,
+  }))
+
+  const quality = scored.filter((s) => s.stars >= MIN_STARS)
+
+  if (quality.length >= minCount) {
+    quality.sort((a, b) => b.stars - a.stars)
+    return quality.map((s) => s.resource)
+  }
+
+  scored.sort((a, b) => b.stars - a.stars)
   return scored.map((s) => s.resource)
 }
 
@@ -826,11 +859,17 @@ async function main() {
         ? fetched
         : matchKeywords(fetched, keywords)
 
-      // Apply quality filters by resource type
+      // Apply quality filters by resource type. Threshold rule:
+      // papers use minCount=5 (filterRecentPapers), everything else uses
+      // minCount=3. Each filter has a safety fallback that returns "all
+      // sorted by signal" when the source has too few items to filter
+      // strictly, so a niche query never returns an empty list.
       if (provider === 'semantic-scholar' || provider === 'scholar') {
         matched = filterRecentPapers(matched)
       } else if (provider === 'bilibili' || provider === 'youtube') {
         matched = filterVideoQuality(matched)
+      } else if (provider === 'github') {
+        matched = filterRepoQuality(matched)
       }
 
       allResources.push(...matched)
