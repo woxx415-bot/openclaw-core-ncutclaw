@@ -726,6 +726,50 @@ export async function handleOpenAiHttpRequest(
 
       finalUsage = resolveChatCompletionUsage(result);
 
+      // Surface server-side error stops to the SSE client. When the
+      // upstream model rejects mid-turn (e.g. deepseek-v4-pro thinking
+      // mode rejecting follow-up requests with HTTP 400 because the
+      // session was previously served reasoning_content that the next
+      // request didn't send back), ACP's runTurn completes "successfully"
+      // with stopReason='error' instead of throwing. Without this branch
+      // the openai-compat layer falls into the regular path below, which
+      // writes an empty content chunk + finishReason=null and lets
+      // maybeFinalize() emit a normal stop chunk — the client sees a
+      // 200 + finish_reason='stop' that is indistinguishable from a real
+      // empty reply. Any retry uses the same poisoned session and gets
+      // the same empty 200 forever.
+      //
+      // We mirror the catch branch's shape (single content chunk
+      // carrying an actionable note + finish_reason='stop') so OpenAI
+      // SSE consumers never need to handle a non-standard finish_reason
+      // value. The diagnostic content lets the user (or a defensive
+      // wrapper like NCUTclaw chat.ts) detect the failure and recover
+      // by switching to a fresh sessionKey.
+      const errorStopReason = (result as { meta?: { stopReason?: string } } | null)
+        ?.meta?.stopReason;
+      if (errorStopReason === "error" && !sawAssistantDelta) {
+        if (!wroteRole) {
+          wroteRole = true;
+          writeAssistantRoleChunk(res, { runId, model });
+        }
+        sawAssistantDelta = true;
+        writeAssistantContentChunk(res, {
+          runId,
+          model,
+          content:
+            "Error: agent run ended with stopReason=error. The server-side session may be poisoned (often a recent model switch left thinking-mode state behind). Start a new conversation or retry with a fresh session key.",
+          finishReason: "stop",
+        });
+        wroteStopChunk = true;
+        finalUsage = finalUsage ?? {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+        };
+        requestFinalize();
+        return;
+      }
+
       if (!sawAssistantDelta) {
         if (!wroteRole) {
           wroteRole = true;
