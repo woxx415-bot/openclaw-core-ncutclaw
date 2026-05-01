@@ -259,17 +259,20 @@ function filterRecentPapers(resources, minCount = 5, maxResults = 15) {
     return year >= minYear
   })
 
-  // Sort + cap to maxResults: papers piled up by recency tend to dwarf the
-  // round-robin video quota in the briefing, costing tokens on AI summary
-  // generation even when most aren't read. maxResults=15 is enough to
-  // surface a useful daily digest without overwhelming.
-  const sortByDate = (arr) => arr.sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
-
+  // Cap to maxResults but PRESERVE input order on the strict path. Semantic
+  // Scholar (and other paper providers) returns results in relevance order
+  // already; resorting by publishedAt would prefer "newest" over "most
+  // relevant", which discards the upstream ranking the caller paid for.
+  // Only the fallback path sorts by date, because there the input order
+  // wasn't trustworthy for the recency lens this filter is supposed to
+  // express anyway.
   if (recent.length >= minCount) {
-    return sortByDate(recent).slice(0, maxResults)
+    return recent.slice(0, maxResults)
   }
-  // Not enough recent — fall back to all sorted, still capped.
-  return sortByDate(resources).slice(0, maxResults)
+  return resources
+    .slice()
+    .sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
+    .slice(0, maxResults)
 }
 
 /**

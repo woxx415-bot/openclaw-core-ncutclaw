@@ -225,7 +225,16 @@ async function main() {
       // 20 by date is plenty for a daily digest, drops AI-summary token
       // cost roughly in half.
       const MAX_PAPERS = 20
-      const sortByDateDesc = (arr) => [...arr].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      // Date sort needs Date.parse, not localeCompare, because RSS feeds
+      // can use either ISO 8601 (arxiv: "2026-05-01T...") or RFC 822
+      // ("Wed, 01 May 2026 ..."). String compare on RFC 822 sorts by
+      // weekday/month name lexicographically and produces nonsense order.
+      // parseInt(NaN) → fall back to 0 so unknown-date items sink last.
+      const dateMs = (s) => {
+        const t = s ? Date.parse(s) : 0
+        return Number.isFinite(t) ? t : 0
+      }
+      const sortByDateDesc = (arr) => [...arr].sort((a, b) => dateMs(b.date) - dateMs(a.date))
       const filteredRaw = recentItems.length >= 5 ? recentItems : keywordMatched
       const filtered = sortByDateDesc(filteredRaw).slice(0, MAX_PAPERS)
 
