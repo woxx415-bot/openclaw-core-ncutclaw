@@ -704,10 +704,24 @@ export async function handleOpenAiHttpRequest(
     }
 
     if (evt.stream === "lifecycle") {
-      const phase = evt.data?.phase;
-      if (phase === "end" || phase === "error") {
-        requestFinalize();
-      }
+      // Don't finalize from the lifecycle stream. The async IIFE below
+      // (which awaits agentCommandFromIngress) is the single owner of
+      // finalization — it sees both success and error in the same place
+      // and is the only path with access to result.meta.stopReason.
+      //
+      // The previous behaviour (call requestFinalize() on phase 'end'/
+      // 'error') raced the IIFE: when streamIncludeUsage=false, lifecycle
+      // 'end' arrives via the agent event bus before the awaited
+      // agentCommandFromIngress returns to the IIFE, maybeFinalize()
+      // closes the SSE, and the stopReason==='error' branch at the
+      // sawAssistantDelta=false check below never gets to run. Layer 2's
+      // Error chunk for poisoned sessions is then unreachable.
+      //
+      // The IIFE's try/catch/finally guarantees requestFinalize() is
+      // called on every exit path (success after the result handling,
+      // catch after writing the internal-error chunk, no finally branch
+      // that skips it), so no separate lifecycle trigger is needed.
+      void evt;
     }
   });
 
