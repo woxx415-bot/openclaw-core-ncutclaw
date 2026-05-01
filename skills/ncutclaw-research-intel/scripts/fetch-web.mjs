@@ -249,7 +249,7 @@ function matchKeywords(resources, keywords) {
 /**
  * Filter papers to prefer recent 2 years. If too few remain, gradually relax.
  */
-function filterRecentPapers(resources, minCount = 5) {
+function filterRecentPapers(resources, minCount = 5, maxResults = 15) {
   const currentYear = new Date().getFullYear()
   const minYear = currentYear - 2
 
@@ -259,10 +259,17 @@ function filterRecentPapers(resources, minCount = 5) {
     return year >= minYear
   })
 
-  // If filtering removes too many, fall back to keeping all but sorted by date
-  if (recent.length >= minCount) return recent
-  // Sort by date descending so newer papers come first
-  return resources.sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
+  // Sort + cap to maxResults: papers piled up by recency tend to dwarf the
+  // round-robin video quota in the briefing, costing tokens on AI summary
+  // generation even when most aren't read. maxResults=15 is enough to
+  // surface a useful daily digest without overwhelming.
+  const sortByDate = (arr) => arr.sort((a, b) => (b.publishedAt || '').localeCompare(a.publishedAt || ''))
+
+  if (recent.length >= minCount) {
+    return sortByDate(recent).slice(0, maxResults)
+  }
+  // Not enough recent — fall back to all sorted, still capped.
+  return sortByDate(resources).slice(0, maxResults)
 }
 
 /**
@@ -276,7 +283,7 @@ function filterRecentPapers(resources, minCount = 5) {
  * filtering 1–2 items defeats the point. Papers use minCount=5 via
  * filterRecentPapers / fetch-rss recency gate.
  */
-function filterVideoQuality(resources, minCount = 3) {
+function filterVideoQuality(resources, minCount = 3, maxResults = 8) {
   const MIN_VIEWS = 100       // minimum play count
   const MIN_DURATION_SEC = 60 // minimum 1 minute (filter out very short clips)
 
@@ -286,18 +293,20 @@ function filterVideoQuality(resources, minCount = 3) {
     return { resource: r, play, duration }
   })
 
-  // Filter by quality thresholds
+  // Filter by quality thresholds, then cap to maxResults. Without the cap a
+  // popular keyword (e.g. LLM tutorials on bilibili) can return 20+ quality
+  // hits and the round-robin downloader spends 5–10 minutes on a single
+  // task pass. Top-8 by play keeps the user-perceived "best" subset.
   const quality = scored.filter((s) => s.play >= MIN_VIEWS && s.duration >= MIN_DURATION_SEC)
 
   if (quality.length >= minCount) {
-    // Sort by views descending for quality ordering
     quality.sort((a, b) => b.play - a.play)
-    return quality.map((s) => s.resource)
+    return quality.slice(0, maxResults).map((s) => s.resource)
   }
 
-  // Not enough quality results, sort all by views and return
+  // Not enough quality results, sort all by views and return (also capped).
   scored.sort((a, b) => b.play - a.play)
-  return scored.map((s) => s.resource)
+  return scored.slice(0, maxResults).map((s) => s.resource)
 }
 
 /**
@@ -307,7 +316,7 @@ function filterVideoQuality(resources, minCount = 3) {
  * Same minCount=3 escape hatch as filterVideoQuality so a niche topic
  * with only 1–2 high-star repos doesn't return an empty list.
  */
-function filterRepoQuality(resources, minCount = 3) {
+function filterRepoQuality(resources, minCount = 3, maxResults = 6) {
   const MIN_STARS = 50
 
   const scored = resources.map((r) => ({
@@ -317,13 +326,19 @@ function filterRepoQuality(resources, minCount = 3) {
 
   const quality = scored.filter((s) => s.stars >= MIN_STARS)
 
+  // Top-N cap: github search returns up to 100 repos and most LLM-related
+  // keywords surface dozens of high-star repos. The briefing only needs a
+  // handful of representative high-quality ones — beyond that, AI summary
+  // tokens get spent listing repos the user won't read.
   if (quality.length >= minCount) {
     quality.sort((a, b) => b.stars - a.stars)
-    return quality.map((s) => s.resource)
+    return quality.slice(0, maxResults).map((s) => s.resource)
   }
 
+  // Fallback path (not enough above-MIN_STARS): also cap so a niche topic
+  // doesn't accidentally return 30 low-star tail repos.
   scored.sort((a, b) => b.stars - a.stars)
-  return scored.map((s) => s.resource)
+  return scored.slice(0, maxResults).map((s) => s.resource)
 }
 
 function parseDurationToSeconds(raw) {

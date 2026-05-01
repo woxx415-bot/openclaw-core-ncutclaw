@@ -220,9 +220,16 @@ async function main() {
       // the user's "论文 5 个" rule — only apply the strict <2-year filter
       // once we have at least 5 recent matches; below that, the niche
       // arxiv query is too narrow to filter and we return everything.
-      const filtered = recentItems.length >= 5 ? recentItems : keywordMatched
+      // MAX_PAPERS=20 caps the per-source output so a wide LLM/AI query
+      // with max_results=40 doesn't dump all 40 into the briefing — top
+      // 20 by date is plenty for a daily digest, drops AI-summary token
+      // cost roughly in half.
+      const MAX_PAPERS = 20
+      const sortByDateDesc = (arr) => [...arr].sort((a, b) => (b.date || '').localeCompare(a.date || ''))
+      const filteredRaw = recentItems.length >= 5 ? recentItems : keywordMatched
+      const filtered = sortByDateDesc(filteredRaw).slice(0, MAX_PAPERS)
 
-      console.log(`[fetch-rss] Matched ${keywordMatched.length} items, ${recentItems.length} recent (>=${minYear}), keeping ${filtered.length}`)
+      console.log(`[fetch-rss] Matched ${keywordMatched.length} items, ${recentItems.length} recent (>=${minYear}), keeping top ${filtered.length} (cap ${MAX_PAPERS})`)
 
       if (filtered.length === 0) {
         sourceResults.push({ label: src.label || 'rss', status: 'empty', count: 0 })
