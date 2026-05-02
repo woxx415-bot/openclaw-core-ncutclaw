@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
+import { validateSafeUrl } from './ssrf-guard.mjs'
 
 export function expandStorageDir(task) {
   let storageDir = task.storageDir
@@ -56,6 +57,28 @@ function computeRetryDelay(attempt, resp, maxBackoffMs) {
 }
 
 export async function fetchWithRetry(url, options = {}, config = {}) {
+  // Reject URLs that resolve to private/loopback before issuing the
+  // request. Skill scripts ingest URLs the LLM picks (paper sources,
+  // RSS feeds, search results) — without this guard, a poisoned source
+  // like http://127.0.0.1:18789 would hit the local Gateway. Validation
+  // runs once before the retry loop because retrying does not change
+  // the destination, so the per-call DNS cost stays bounded.
+  const validation = await validateSafeUrl(url)
+  if (!validation.ok) {
+    throw new Error(`SSRF 守卫拒绝: ${validation.message}`)
+  }
+
+  // Force redirect:'manual' so a public URL cannot 302 to a private
+  // address and slip past the initial validateSafeUrl. We can't use a
+  // per-request DNS lookup hook in undici/fetch, so the only way to
+  // close the redirect-bypass window is to reject 3xx responses outright
+  // and let the caller resolve the redirect themselves (which then runs
+  // back through validateSafeUrl). Mirrors electron/main/net/ssrf-fetch.ts
+  // which does the same. NCUTCLAW_SSRF_GUARD_DISABLE bypasses this for
+  // users who deliberately want to follow redirects.
+  const guardDisabled = process.env.NCUTCLAW_SSRF_GUARD_DISABLE === '1'
+  const fetchOptions = guardDisabled ? options : { ...options, redirect: 'manual' }
+
   const maxRetries = Number.isFinite(Number(config.maxRetries)) ? Number(config.maxRetries) : 3
   const maxBackoffMs = Number.isFinite(Number(config.maxBackoffMs)) ? Number(config.maxBackoffMs) : 8000
   let lastError = null
@@ -63,7 +86,13 @@ export async function fetchWithRetry(url, options = {}, config = {}) {
   for (let attempt = 0; attempt <= maxRetries; attempt += 1) {
     let resp = null
     try {
-      resp = await fetch(url, options)
+      resp = await fetch(url, fetchOptions)
+      if (!guardDisabled && resp.status >= 300 && resp.status < 400) {
+        const location = resp.headers.get('location') || '(no Location header)'
+        // Drain & throw — do not retry; redirects are deterministic so
+        // the second attempt would land on the same forbidden hop.
+        throw new Error(`SSRF 守卫拒绝: 禁止跟随重定向 (HTTP ${resp.status} -> ${location})`)
+      }
       if (resp.ok) return resp
 
       const shouldRetry = resp.status === 429 || resp.status >= 500
@@ -72,6 +101,8 @@ export async function fetchWithRetry(url, options = {}, config = {}) {
       }
     } catch (error) {
       lastError = error
+      // SSRF guard rejections are deterministic — don't waste retry budget.
+      if (typeof error?.message === 'string' && error.message.startsWith('SSRF 守卫拒绝:')) break
       if (attempt === maxRetries) break
     }
 
