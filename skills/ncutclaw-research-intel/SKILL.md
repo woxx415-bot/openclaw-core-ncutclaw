@@ -107,7 +107,7 @@ emoji: 📚
 - "大语言模型" / "LLM" → keywords: ["大语言模型", "large language model", "LLM"]
 - "arxiv上的" / "论文" → sources 包含 arxiv
 - "论文和代码" → sources 包含 arxiv + github
-- "论文和资讯" / "资讯日报" / "最新动态" / "科技新闻" → sources 至少包含 arxiv + semantic_scholar + github + bilibili + `{ "type": "platform-search", "platform": "douyin", "label": "douyin", "max": 5 }`
+- "论文和资讯" / "资讯日报" / "最新动态" / "科技新闻" → sources 至少包含 arxiv + semantic_scholar + github + bilibili + `{ "type": "platform-search", "platform": "douyin", "label": "douyin", "max": 5 }` + `{ "type": "platform-search", "platform": "xiaohongshu", "label": "xiaohongshu", "max": 5 }`（小红书未登录时 runtime 会自动跳过，不会硬性失败）
 - "B站" / "bilibili" → sources 包含 bilibili
 - "YouTube" → sources 包含 youtube
 - "小红书" + 具体 URL → sources 包含 `{type:"xiaohongshu", url:"..."}`
